@@ -1,1 +1,0 @@
-1,000 Unique GIF seagulls that act as a private membership to our Metaverse. With benefits ranging from Universal Basic Income, Play to Earn, Exclusive NFT drops, Real Estate and career opportunities, and much more. Come fly with the Seagull Club.
