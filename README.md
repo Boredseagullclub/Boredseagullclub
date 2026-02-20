@@ -1,6 +1,6 @@
-# Seagull Assets Starter Project
+# Seagull Assets Bridge and Swap
 
-This is a **starter project** for the Seagull Assets synthetic pool system — a multi-pool synthetic asset engine with swap functionality, fee retention, and AI integration hooks.
+This is the Seagull Asset Pool Bridge System — a multi-pool Layer 2 asset engine with swap functionality, fee retention, and AI integration hooks.
 
 It includes:
 
@@ -13,8 +13,8 @@ It includes:
 
 ## Features
 
-1. **Synthetic Pools**: XRP, FLR, and XDC pools  
-2. **Swap Engine**: Users can swap between pools; 2.5% fee retained in origin pool  
-3. **Treasury Tracking**: Accumulated fees stored in treasury  
-4. **AI Hooks**: Ready for dynamic fee adjustment using OpenAI API  
-5. **Frontend**: Simple swap interface hosted on GitHub Pages  
+1. **Layer 2 Pools**: XRP <-> FLR <-> XDC pools as well as XLM <-> XRP <-> HBAR
+3. **Swap Engine**: Users can swap between pools; 2.5% fee retained in origin pool  
+4. **Treasury Tracking**: Accumulated fees stored in treasury  
+5. **AI Hooks**: Ready for dynamic fee adjustment using OpenAI API  
+6. **Frontend**: Simple swap interface hosted on GitHub Pages  
