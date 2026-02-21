@@ -1,31 +1,51 @@
+const { SEAGULLCOIN, SEAGULLCASH, FEES } = require('./config');
 
-let balances = {
-    1: { xrp_pool: 100000, flr_pool: 100000, xdc_pool: 100000 }
-};
+// In-memory ledger (replace with DB in production)
+let users = {};       // { walletAddress: { balances: {}, tokens: [] } }
+let treasury = {};    // { TOKEN: collectedFees }
 
-let treasury = { xrp_pool: 0, flr_pool: 0, xdc_pool: 0 };
+const ALL_TOKENS = [...Object.keys(SEAGULLCOIN), ...Object.keys(SEAGULLCASH)];
+ALL_TOKENS.forEach(t => treasury[t] = 0);
 
-function executeSwap(userId, fromPool, toPool, amount) {
-    const user = balances[userId];
-    if (!user) return { success: false, message: "User not found" };
-
-    if (user[fromPool] < amount) {
-        return { success: false, message: "Insufficient balance" };
-    }
-
-    const feePercent = 0.025;
-    const fee = amount * feePercent;
-    const received = amount - fee;
-
-    user[fromPool] -= amount;
-    user[toPool] += received;
-    treasury[fromPool] += fee;
-
-    return {
-        success: true,
-        balances: user,
-        fee: fee
-    };
+// Determine fee
+function getFee(token) {
+    if (SEAGULLCOIN[token]) return FEES.SEAGULLCOIN;
+    if (SEAGULLCASH[token]) return FEES.SEAGULLCASH;
+    return 0;
 }
 
-module.exports = { executeSwap };
+// Core swap engine
+function executeSwap(walletAddress, fromToken, toToken, amount) {
+    if (!walletAddress || !fromToken || !toToken)
+        return { success: false, message: 'Missing parameters' };
+
+    const user = users[walletAddress];
+    if (!user) return { success: false, message: 'Wallet not found' };
+    if (!ALL_TOKENS.includes(fromToken) || !ALL_TOKENS.includes(toToken))
+        return { success: false, message: 'Unsupported token' };
+    if (fromToken === toToken) return { success: false, message: 'Cannot swap same token' };
+
+    const parsedAmount = Number(amount);
+    if (!Number.isFinite(parsedAmount) || parsedAmount <= 0)
+        return { success: false, message: 'Invalid amount' };
+
+    const balance = Number(user.balances[fromToken] || 0);
+    if (balance < parsedAmount)
+        return { success: false, message: 'Insufficient balance' };
+
+    const feePercent = getFee(fromToken);
+    const fee = Number((parsedAmount * feePercent).toFixed(8));
+    const received = Number((parsedAmount - fee).toFixed(8));
+
+    if (received <= 0)
+        return { success: false, message: 'Amount too small after fee' };
+
+    // Apply swap
+    user.balances[fromToken] = Number((balance - parsedAmount).toFixed(8));
+    user.balances[toToken] = Number((user.balances[toToken] || 0) + received);
+    treasury[fromToken] = Number((treasury[fromToken] + fee).toFixed(8));
+
+    return { success: true, balances: user.balances, fee };
+}
+
+module.exports = { executeSwap, users, treasury, ALL_TOKENS };
