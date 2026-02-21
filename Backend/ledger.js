@@ -3,6 +3,8 @@ const { SEAGULLCOIN, SEAGULLCASH, FEES } = require('./config');
 // In-memory ledger (replace with DB in production)
 let users = {};       // { walletAddress: { balances: {}, tokens: [] } }
 let treasury = {};    // { TOKEN: collectedFees }
+let transactions = []; 
+// [{ walletAddress, fromToken, toToken, amount, received, fee, timestamp }]
 
 const ALL_TOKENS = [...Object.keys(SEAGULLCOIN), ...Object.keys(SEAGULLCASH)];
 ALL_TOKENS.forEach(t => treasury[t] = 0);
