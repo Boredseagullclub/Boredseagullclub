@@ -42,33 +42,51 @@ function getFee(token) {
 */
 function executeSwap(walletAddress, fromToken, toToken, amount) {
 
+    // 1️⃣ Basic validation first
+    if (!walletAddress || !fromToken || !toToken)
+        return { success: false, message: 'Missing parameters' };
+
     const user = users[walletAddress];
-    if (!user) return { success: false, message: 'Wallet not found' };
+    if (!user)
+        return { success: false, message: 'Wallet not found' };
 
     if (fromToken === toToken)
-    return { success: false, message: 'Cannot swap same token' };
+        return { success: false, message: 'Cannot swap same token' };
 
-    if (!ALL_TOKENS.includes(fromToken) || !ALL_TOKENS.includes(toToken)) {
+    if (!ALL_TOKENS.includes(fromToken) || !ALL_TOKENS.includes(toToken))
         return { success: false, message: 'Unsupported token' };
-    }
 
-    if ((user.balances[fromToken] || 0) < amount) {
+    const parsedAmount = Number(amount);
+
+    if (!Number.isFinite(parsedAmount) || parsedAmount <= 0)
+        return { success: false, message: 'Invalid amount' };
+
+    const currentBalance = Number(user.balances[fromToken] || 0);
+
+    if (currentBalance < parsedAmount)
         return { success: false, message: 'Insufficient balance' };
-    }
 
+    // 2️⃣ Calculate fee safely
     const feePercent = getFee(fromToken);
-    const fee = Number((amount * feePercent).toFixed(8));
-    const received = Number((amount - fee).toFixed(8));
+    const fee = Number((parsedAmount * feePercent).toFixed(8));
+    const received = Number((parsedAmount - fee).toFixed(8));
 
-    // Deduct
-    user.balances[fromToken] -= amount;
+    if (received <= 0)
+        return { success: false, message: 'Amount too small after fee' };
 
-    // Credit
-    if (!user.balances[toToken]) user.balances[toToken] = 0;
-    user.balances[toToken] += received;
+    // 3️⃣ Apply mutation only AFTER all checks pass
+    user.balances[fromToken] = Number((currentBalance - parsedAmount).toFixed(8));
 
-    // Treasury
-    treasury[fromToken] += fee;
+    if (!user.balances[toToken])
+        user.balances[toToken] = 0;
+
+    user.balances[toToken] = Number(
+        (user.balances[toToken] + received).toFixed(8)
+    );
+
+    treasury[fromToken] = Number(
+        (treasury[fromToken] + fee).toFixed(8)
+    );
 
     return {
         success: true,
