@@ -53,13 +53,23 @@ function executeSwap(walletAddress, fromToken, toToken, amount, feeOverride = nu
         return { success: false, message: 'Insufficient balance' };
 
     // -------- Fee calculation --------
-    const feePercent = feeOverride !== null ? feeOverride : getFee(fromToken);
-    const fee = Number((parsedAmount * feePercent).toFixed(8));
-    const received = Number((parsedAmount - fee).toFixed(8));
+    const poolKey = `${fromToken}_${toToken}`;
+const reverseKey = `${toToken}_${fromToken}`;
 
-    if (received <= 0)
-        return { success: false, message: 'Amount too small after fee' };
+const pool = pools[poolKey] || pools[reverseKey];
 
+if (!pool)
+    return { success: false, message: 'Liquidity pool not found' };
+
+const reserveIn = pool[fromToken];
+const reserveOut = pool[toToken];
+
+const amountInWithFee = parsedAmount * (1 - feePercent);
+
+const amountOut =
+    (amountInWithFee * reserveOut) /
+    (reserveIn + amountInWithFee);
+    
     // -------- Apply swap --------
     user.balances[fromToken] = Number((currentBalance - parsedAmount).toFixed(8));
 
