@@ -53,26 +53,6 @@ function executeSwap(walletAddress, fromToken, toToken, amount) {
 }
 
 // --- Wallet creation/import ---
-app.post('/api/wallet', (req, res) => {
-    const { walletAddress } = req.body;
-    if (!walletAddress) return res.status(400).send({ error: 'walletAddress required' });
-
-    if (!users[walletAddress]) {
-        users[walletAddress] = { balances: {}, tokens: [] };
-
-        // Pre-mint all Layer 2 tokens
-        Object.keys(SEAGULLCOIN).forEach(token => {
-            users[walletAddress].balances[token] = 0;
-            users[walletAddress].tokens.push(token);
-        });
-        Object.keys(SEAGULLCASH).forEach(token => {
-            users[walletAddress].balances[token] = 0;
-            users[walletAddress].tokens.push(token);
-        });
-    }
-
-    res.send({ success: true, wallet: users[walletAddress] });
-});
 
 // --- Add Layer 2 token if native balance requirement met ---
 app.post('/api/addToken', (req, res) => {
@@ -96,15 +76,26 @@ app.post('/api/addToken', (req, res) => {
 });
 
 // --- Swap endpoint ---
-app.post('/api/swap', (req, res) => {
-    const { walletAddress, fromToken, toToken, amount } = req.body;
-    if (!walletAddress || !fromToken || !toToken || !amount)
-        return res.status(400).send({ error: 'Missing fields' });
+app.post('/api/wallet', (req, res) => {
+    const { walletAddress } = req.body;
 
-    const result = executeSwap(walletAddress, fromToken, toToken, amount);
-    if (!result.success) return res.status(400).send({ error: result.message });
+    if (!users[walletAddress]) {
+        // Generate XRP wallet (example)
+        const { Wallet } = require('ripple-lib');
+        const wallet = Wallet.generate();
 
-    res.send(result);
+        users[walletAddress] = {
+            balances: {},
+            tokens: [],
+            secret: wallet.secret, // user keeps this
+            public: wallet.address
+        };
+
+        Object.keys(SEAGULLCOIN).forEach(token => users[walletAddress].balances[token] = 0);
+        Object.keys(SEAGULLCASH).forEach(token => users[walletAddress].balances[token] = 0);
+    }
+
+    res.send({ success: true, wallet: users[walletAddress] });
 });
 
 // --- Get user balances ---
