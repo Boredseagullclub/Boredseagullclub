@@ -1,4 +1,3 @@
-// app.js
 const express = require('express');
 const bodyParser = require('body-parser');
 const { SEAGULLCOIN, SEAGULLCASH, FEES } = require('./config');
@@ -6,108 +5,150 @@ const { SEAGULLCOIN, SEAGULLCASH, FEES } = require('./config');
 const app = express();
 app.use(bodyParser.json());
 
-// --- In-memory ledger (replace with MongoDB for production) ---
-let users = {}; // { walletAddress: { balances: {}, tokens: [] } }
-let treasury = {}; // Tracks collected fees
+/*
+    In-memory state
+    Replace with MongoDB in production
+*/
 
-// Initialize treasury pools for all tokens
-[...Object.keys(SEAGULLCOIN), ...Object.keys(SEAGULLCASH)].forEach(asset => {
-    treasury[asset] = 0;
+let users = {}; 
+// { walletAddress: { balances: { TOKEN: amount }, tokens: [] } }
+
+let treasury = {};
+// { TOKEN: collectedFees }
+
+/*
+    Initialize treasury for all supported tokens
+*/
+const ALL_TOKENS = [
+    ...Object.keys(SEAGULLCOIN),
+    ...Object.keys(SEAGULLCASH)
+];
+
+ALL_TOKENS.forEach(token => {
+    treasury[token] = 0;
 });
 
-// --- Helper functions ---
+/*
+    Fee resolver
+*/
 function getFee(token) {
     if (SEAGULLCOIN[token]) return FEES.SEAGULLCOIN;
     if (SEAGULLCASH[token]) return FEES.SEAGULLCASH;
-    return 0.025; // fallback
+    return 0;
 }
 
-function getNativeAsset(token) {
-    for (const [native, layer2s] of Object.entries({ ...SEAGULLCOIN, ...SEAGULLCASH })) {
-        if (layer2s.contract || layer2s.issuer) {
-            if (token === native) return native;
-        }
-    }
-    return null;
-}
-
-// --- Core swap logic ---
+/*
+    Core swap engine
+*/
 function executeSwap(walletAddress, fromToken, toToken, amount) {
+
     const user = users[walletAddress];
     if (!user) return { success: false, message: 'Wallet not found' };
 
-    if ((user.balances[fromToken] || 0) < amount)
+    if (!ALL_TOKENS.includes(fromToken) || !ALL_TOKENS.includes(toToken)) {
+        return { success: false, message: 'Unsupported token' };
+    }
+
+    if ((user.balances[fromToken] || 0) < amount) {
         return { success: false, message: 'Insufficient balance' };
+    }
 
     const feePercent = getFee(fromToken);
     const fee = amount * feePercent;
     const received = amount - fee;
 
+    // Deduct
     user.balances[fromToken] -= amount;
+
+    // Credit
     if (!user.balances[toToken]) user.balances[toToken] = 0;
     user.balances[toToken] += received;
 
+    // Treasury
     treasury[fromToken] += fee;
 
-    return { success: true, balances: user.balances, fee };
+    return {
+        success: true,
+        balances: user.balances,
+        fee
+    };
 }
 
-// --- Wallet creation/import ---
+/*
+    Create / Register wallet (NON-CUSTODIAL)
+    Frontend must generate wallet.
+    Backend only stores public address.
+*/
+app.post('/api/wallet', (req, res) => {
+    const { publicAddress } = req.body;
 
-// --- Add Layer 2 token if native balance requirement met ---
+    if (!publicAddress)
+        return res.status(400).send({ error: 'publicAddress required' });
+
+    if (!users[publicAddress]) {
+        users[publicAddress] = {
+            balances: {},
+            tokens: []
+        };
+    }
+
+    res.send({ success: true });
+});
+
+/*
+    Add Seagull token manually
+*/
 app.post('/api/addToken', (req, res) => {
     const { walletAddress, token } = req.body;
-    if (!walletAddress || !token) return res.status(400).send({ error: 'Missing fields' });
+
+    if (!walletAddress || !token)
+        return res.status(400).send({ error: 'Missing fields' });
 
     const user = users[walletAddress];
-    if (!user) return res.status(400).send({ error: 'Wallet not found' });
-    if (user.tokens.includes(token)) return res.status(400).send({ error: 'Token already added' });
+    if (!user)
+        return res.status(400).send({ error: 'Wallet not found' });
 
-    const nativeAsset = getNativeAsset(token);
-    const requiredNative = 10; // example minimum
-    const nativeBalance = user.balances[nativeAsset] || 0;
-    if (nativeBalance < requiredNative)
-        return res.status(400).send({ error: 'Insufficient native balance to activate token' });
+    if (!ALL_TOKENS.includes(token))
+        return res.status(400).send({ error: 'Unsupported token' });
 
-    user.tokens.push(token);
-    if (!user.balances[token]) user.balances[token] = 0;
+    if (!user.tokens.includes(token)) {
+        user.tokens.push(token);
+        user.balances[token] = user.balances[token] || 0;
+    }
 
     res.send({ success: true, wallet: user });
 });
 
-// --- Swap endpoint ---
-app.post('/api/wallet', (req, res) => {
-    const { walletAddress } = req.body;
+/*
+    Swap endpoint
+*/
+app.post('/api/swap', (req, res) => {
+    const { walletAddress, fromToken, toToken, amount } = req.body;
 
-    if (!users[walletAddress]) {
-        // Generate XRP wallet (example)
-        const { Wallet } = require('ripple-lib');
-        const wallet = Wallet.generate();
+    if (!walletAddress || !fromToken || !toToken || !amount)
+        return res.status(400).send({ error: 'Missing fields' });
 
-        users[walletAddress] = {
-            balances: {},
-            tokens: [],
-            secret: wallet.secret, // user keeps this
-            public: wallet.address
-        };
+    const result = executeSwap(walletAddress, fromToken, toToken, Number(amount));
 
-        Object.keys(SEAGULLCOIN).forEach(token => users[walletAddress].balances[token] = 0);
-        Object.keys(SEAGULLCASH).forEach(token => users[walletAddress].balances[token] = 0);
-    }
+    if (!result.success)
+        return res.status(400).send({ error: result.message });
 
-    res.send({ success: true, wallet: users[walletAddress] });
+    res.send(result);
 });
 
-// --- Get user balances ---
+/*
+    Get balances
+*/
 app.get('/api/balances/:walletAddress', (req, res) => {
-    const walletAddress = req.params.walletAddress;
-    const user = users[walletAddress];
-    if (!user) return res.status(400).send({ error: 'Wallet not found' });
-    res.send({ balances: user.balances, tokens: user.tokens });
+    const user = users[req.params.walletAddress];
+
+    if (!user)
+        return res.status(400).send({ error: 'Wallet not found' });
+
+    res.send(user);
 });
 
 const PORT = 3000;
-app.listen(PORT, () => console.log(`Layer 2 bridge backend running on port ${PORT}`));
+app.listen(PORT, () => console.log(`Seagull Bridge running on port ${PORT}`));
 
-// --- Export core functions for AI orchestration ---
 module.exports = { executeSwap, users, treasury };
