@@ -12,7 +12,7 @@ const ALL_TOKENS = [
     ...Object.keys(SEAGULLCASH)
 ];
 
-// Initialize treasury pools
+// Initialize treasury
 ALL_TOKENS.forEach(token => {
     treasury[token] = 0;
 });
@@ -24,7 +24,7 @@ function getFee(token) {
     return 0;
 }
 
-// Core swap engine
+// Core swap engine (AMM only for Native <-> Layer 2)
 function executeSwap(walletAddress, fromToken, toToken, amount, feeOverride = null) {
 
     // -------- Basic validation --------
@@ -38,56 +38,75 @@ function executeSwap(walletAddress, fromToken, toToken, amount, feeOverride = nu
         return { success: false, message: 'Unsupported token' };
 
     const parsedAmount = Number(amount);
-
     if (!Number.isFinite(parsedAmount) || parsedAmount <= 0)
         return { success: false, message: 'Invalid amount' };
 
     const user = users[walletAddress];
-
     if (!user)
         return { success: false, message: 'Wallet not found' };
 
     const currentBalance = Number(user.balances[fromToken] || 0);
-
     if (currentBalance < parsedAmount)
         return { success: false, message: 'Insufficient balance' };
 
     // -------- Fee calculation --------
+    const feePercent = feeOverride !== null ? feeOverride : getFee(fromToken);
+    const fee = Number((parsedAmount * feePercent).toFixed(8));
+
+    // -------- AMM swap logic --------
     const poolKey = `${fromToken}_${toToken}`;
-const reverseKey = `${toToken}_${fromToken}`;
+    const reverseKey = `${toToken}_${fromToken}`;
+    const pool = pools[poolKey] || pools[reverseKey];
 
-const pool = pools[poolKey] || pools[reverseKey];
+    if (!pool) {
+        // If no pool exists, this could be a bridge move instead
+        const received = parsedAmount - fee;
+        if (received <= 0)
+            return { success: false, message: 'Amount too small after fee' };
 
-if (!pool)
-    return { success: false, message: 'Liquidity pool not found' };
+        // Apply bridge-like swap
+        user.balances[fromToken] -= parsedAmount;
+        user.balances[toToken] = (user.balances[toToken] || 0) + received;
+        treasury[fromToken] += fee;
 
-const reserveIn = pool[fromToken];
-const reserveOut = pool[toToken];
+        transactions.push({
+            walletAddress,
+            fromToken,
+            toToken,
+            amount: parsedAmount,
+            received,
+            fee,
+            timestamp: new Date().toISOString()
+        });
 
-const amountInWithFee = parsedAmount * (1 - feePercent);
+        return { success: true, balances: user.balances, fee };
+    }
 
-const amountOut =
-    (amountInWithFee * reserveOut) /
-    (reserveIn + amountInWithFee);
-    
-    // -------- Apply swap --------
+    // AMM formula (x * y = k)
+    const reserveIn = pool[fromToken];
+    const reserveOut = pool[toToken];
+
+    const amountInWithFee = parsedAmount * (1 - feePercent);
+    const amountOut = (amountInWithFee * reserveOut) / (reserveIn + amountInWithFee);
+
+    // Update user balances
     user.balances[fromToken] = Number((currentBalance - parsedAmount).toFixed(8));
+    user.balances[toToken] = Number(((user.balances[toToken] || 0) + amountOut).toFixed(8));
 
-    user.balances[toToken] = Number(
-        ((user.balances[toToken] || 0) + received).toFixed(8)
-    );
+    // Update treasury
+    treasury[fromToken] = Number((treasury[fromToken] + fee).toFixed(8));
 
-    treasury[fromToken] = Number(
-        (treasury[fromToken] + fee).toFixed(8)
-    );
+    // Update pool reserves
+    pool[fromToken] += parsedAmount;
+    pool[toToken] -= amountOut;
 
-    // -------- Record transaction --------
+    // Record transaction
     transactions.push({
         walletAddress,
         fromToken,
         toToken,
         amount: parsedAmount,
-        received,
+        received: amountOut,
         fee,
         timestamp: new Date().toISOString()
     });
@@ -105,5 +124,6 @@ module.exports = {
     treasury,
     ALL_TOKENS,
     getFee,
-    transactions
+    transactions,
+    pools
 };
