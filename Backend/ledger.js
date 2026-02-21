@@ -4,6 +4,9 @@ const { SEAGULLCOIN, SEAGULLCASH, FEES } = require('./config');
 let users = {};       // { walletAddress: { balances: {}, tokens: [] } }
 let treasury = {};    // { TOKEN: collectedFees }
 let transactions = []; // [{ walletAddress, fromToken, toToken, amount, received, fee, timestamp }]
+let dailyBridgeUsage = {
+  // token: { date: 'YYYY-MM-DD', total: 0 }
+};
 let pools = {}; 
 // { "TOKENA_TOKENB": { TOKENA: reserve, TOKENB: reserve } }
 
