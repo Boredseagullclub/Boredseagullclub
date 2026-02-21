@@ -21,7 +21,7 @@ function getFee(token) {
   return 0;
 }
 
-async function executeSwap(walletAddress, fromToken, toToken, amount) {
+async function executeSwap(walletAddress, fromToken, toToken, amount, signature) {
 
   const parsedAmount = Number(amount);
 
