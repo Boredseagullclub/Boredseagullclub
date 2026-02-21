@@ -57,8 +57,8 @@ function executeSwap(walletAddress, fromToken, toToken, amount) {
     }
 
     const feePercent = getFee(fromToken);
-    const fee = amount * feePercent;
-    const received = amount - fee;
+    const fee = Number((amount * feePercent).toFixed(8));
+    const received = Number((amount - fee).toFixed(8));
 
     // Deduct
     user.balances[fromToken] -= amount;
