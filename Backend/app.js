@@ -125,10 +125,15 @@ app.post('/api/addToken', (req, res) => {
 app.post('/api/swap', (req, res) => {
     const { walletAddress, fromToken, toToken, amount } = req.body;
 
-    if (!walletAddress || !fromToken || !toToken || !amount)
+    if (!walletAddress || !fromToken || !toToken || amount === undefined)
         return res.status(400).send({ error: 'Missing fields' });
 
-    const result = executeSwap(walletAddress, fromToken, toToken, Number(amount));
+    const parsedAmount = Number(amount);
+
+    if (isNaN(parsedAmount) || parsedAmount <= 0)
+        return res.status(400).send({ error: 'Invalid amount' });
+
+    const result = executeSwap(walletAddress, fromToken, toToken, parsedAmount);
 
     if (!result.success)
         return res.status(400).send({ error: result.message });
