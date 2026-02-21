@@ -6,6 +6,7 @@ const userSchema = new mongoose.Schema({
   publicAddress: { type: String, required: true, unique: true },
   tokens: { type: [String], default: [] },
   balances: { type: Map, of: Number, default: {} },
+  nonce: { type: Number, default: 0 },
   dailyBridgeUsage: {
     type: Map,
     of: new mongoose.Schema({
