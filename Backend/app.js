@@ -1,6 +1,7 @@
 const express = require('express');
 const bodyParser = require('body-parser');
 const ledger = require('./Ledger');
+const mongoose = require('mongoose');
 const { getDynamicFee } = require('./DynamicFee');
 
 const app = express();
