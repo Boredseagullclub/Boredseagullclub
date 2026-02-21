@@ -45,6 +45,9 @@ function executeSwap(walletAddress, fromToken, toToken, amount) {
     const user = users[walletAddress];
     if (!user) return { success: false, message: 'Wallet not found' };
 
+    if (fromToken === toToken)
+    return { success: false, message: 'Cannot swap same token' };
+
     if (!ALL_TOKENS.includes(fromToken) || !ALL_TOKENS.includes(toToken)) {
         return { success: false, message: 'Unsupported token' };
     }
