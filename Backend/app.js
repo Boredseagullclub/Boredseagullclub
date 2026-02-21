@@ -1,40 +1,96 @@
+// app.js
 const express = require('express');
 const bodyParser = require('body-parser');
-const { SEAGULLCOIN, SEAGULLCASH, FEES } = require('./config');
+const ledger = require('./Ledger');
+const { getDynamicFee } = require('./DynamicFee');
 
 const app = express();
 app.use(bodyParser.json());
 
 /*
-    In-memory state
-    Replace with MongoDB in production
+    Create / Register wallet (NON-CUSTODIAL)
+    Frontend generates wallet, backend only stores publicAddress
 */
+app.post('/api/wallet', (req, res) => {
+    const { publicAddress } = req.body;
 
-let users = {}; 
-// { walletAddress: { balances: { TOKEN: amount }, tokens: [] } }
+    if (!publicAddress)
+        return res.status(400).send({ error: 'publicAddress required' });
 
-let treasury = {};
-// { TOKEN: collectedFees }
+    if (!ledger.users[publicAddress]) {
+        ledger.users[publicAddress] = { balances: {}, tokens: [] };
+    }
 
-/*
-    Initialize treasury for all supported tokens
-*/
-const ALL_TOKENS = [
-    ...Object.keys(SEAGULLCOIN),
-    ...Object.keys(SEAGULLCASH)
-];
-
-ALL_TOKENS.forEach(token => {
-    treasury[token] = 0;
+    res.send({ success: true });
 });
 
 /*
-    Fee resolver
+    Add token manually to wallet
 */
-function getFee(token) {
-    if (SEAGULLCOIN[token]) return FEES.SEAGULLCOIN;
-    if (SEAGULLCASH[token]) return FEES.SEAGULLCASH;
-    return 0;
+app.post('/api/addToken', (req, res) => {
+    const { walletAddress, token } = req.body;
+
+    if (!walletAddress || !token)
+        return res.status(400).send({ error: 'Missing fields' });
+
+    const user = ledger.users[walletAddress];
+    if (!user)
+        return res.status(400).send({ error: 'Wallet not found' });
+
+    if (!ledger.ALL_TOKENS.includes(token))
+        return res.status(400).send({ error: 'Unsupported token' });
+
+    if (!user.tokens.includes(token)) {
+        user.tokens.push(token);
+        user.balances[token] = user.balances[token] || 0;
+    }
+
+    res.send({ success: true, wallet: user });
+});
+
+/*
+    Swap endpoint
+    Uses Ledger.js as core engine
+    Optionally uses DynamicFee.js (future)
+*/
+app.post('/api/swap', async (req, res) => {
+    const { walletAddress, fromToken, toToken, amount } = req.body;
+
+    if (!walletAddress || !fromToken || !toToken || amount === undefined)
+        return res.status(400).send({ error: 'Missing fields' });
+
+    const parsedAmount = Number(amount);
+
+    if (!Number.isFinite(parsedAmount) || parsedAmount <= 0)
+        return res.status(400).send({ error: 'Invalid amount' });
+
+    // Optional: fetch dynamic fee (future)
+    // const feePercent = await getDynamicFee(fromToken, toToken, parsedAmount);
+
+    const result = ledger.executeSwap(walletAddress, fromToken, toToken, parsedAmount);
+
+    if (!result.success)
+        return res.status(400).send({ error: result.message });
+
+    res.send(result);
+});
+
+/*
+    Get user balances
+*/
+app.get('/api/balances/:walletAddress', (req, res) => {
+    const user = ledger.users[req.params.walletAddress];
+
+    if (!user)
+        return res.status(400).send({ error: 'Wallet not found' });
+
+    res.send(user);
+});
+
+const PORT = 3000;
+app.listen(PORT, () => console.log(`Seagull Bridge running on port ${PORT}`));
+
+module.exports = { app, ledger };    return 0;
 }
 
 /*
