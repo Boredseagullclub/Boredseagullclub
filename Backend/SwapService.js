@@ -38,7 +38,19 @@ async function settleOnChain(walletAddress, token, amount, chain) {
       // EVM chains
       {
         // Example placeholder for sending ERC20 token via ethers.js
-        const provider = new ethers.JsonRpcProvider(process.env.EVM_RPC_URL);
+        function getEvmProvider(chain) {
+  switch (chain) {
+    case 'FLR':
+      return new ethers.JsonRpcProvider(process.env.FLARE_RPC_URL);
+
+    case 'XDC':
+      return new ethers.JsonRpcProvider(process.env.XDC_RPC_URL);
+
+    default:
+      throw new Error('Unsupported EVM chain');
+  }
+        }
+        const provider = getEvmProvider(chain);
         const wallet = new ethers.Wallet(process.env.BRIDGE_PRIVATE_KEY, provider);
         const tokenContract = new ethers.Contract(
           token.contractAddress,
