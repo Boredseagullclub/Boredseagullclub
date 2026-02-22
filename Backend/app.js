@@ -18,13 +18,14 @@ mongoose.connect('mongodb://localhost:27017/seagull', {
 /*
     Create / Register wallet (NON-CUSTODIAL)
 */
-app.post('/api/wallet', (req, res) => {
-    const { publicAddress } = req.body;
+const User = require('./models/User');
 
-    if (!publicAddress)
-        return res.status(400).send({ error: 'publicAddress required' });
+app.post('/api/wallet', async (req, res) => {
+  const { publicAddress } = req.body;
+  if (!publicAddress)
+    return res.status(400).send({ error: 'publicAddress required' });
 
-    let user = await User.findOne({ publicAddress });
+  let user = await User.findOne({ publicAddress });
   if (!user) {
     user = await User.create({ publicAddress });
   }
@@ -35,25 +36,21 @@ app.post('/api/wallet', (req, res) => {
 /*
     Add token manually to wallet
 */
-app.post('/api/addToken', (req, res) => {
-    const { walletAddress, token } = req.body;
+app.post('/api/addToken', async (req, res) => {
+  const { walletAddress, token } = req.body;
+  if (!walletAddress || !token)
+    return res.status(400).send({ error: 'Missing fields' });
 
-    if (!walletAddress || !token)
-        return res.status(400).send({ error: 'Missing fields' });
+  const user = await User.findOne({ publicAddress: walletAddress });
+  if (!user) return res.status(400).send({ error: 'Wallet not found' });
 
-    const user = await User.findOne({ publicAddress: req.params.walletAddress });
-if (!user) return res.status(400).send({ error: 'Wallet not found' });
+  if (!user.tokens.includes(token)) {
+    user.tokens.push(token);
+    user.balances.set(token, user.balances.get(token) || 0);
+    await user.save();
+  }
 
-res.send({ balances: Object.fromEntries(user.balances), tokens: user.tokens });
-    if (!ledger.ALL_TOKENS.includes(token))
-        return res.status(400).send({ error: 'Unsupported token' });
-
-    if (!user.tokens.includes(token)) {
-        user.tokens.push(token);
-        user.balances[token] = user.balances[token] || 0;
-    }
-
-    res.send({ success: true, wallet: user });
+  res.send({ success: true, wallet: user });
 });
 
 /*
@@ -83,13 +80,14 @@ app.post('/api/swap', async (req, res) => {
 /*
     Get user balances
 */
-app.get('/api/balances/:walletAddress', (req, res) => {
-    const user = ledger.users[req.params.walletAddress];
+app.get('/api/balances/:walletAddress', async (req, res) => {
+  const user = await User.findOne({ publicAddress: req.params.walletAddress });
+  if (!user) return res.status(400).send({ error: 'Wallet not found' });
 
-    if (!user)
-        return res.status(400).send({ error: 'Wallet not found' });
-
-    res.send(user);
+  res.send({ 
+    balances: Object.fromEntries(user.balances), 
+    tokens: user.tokens 
+  });
 });
 
 const PORT = 3000;
