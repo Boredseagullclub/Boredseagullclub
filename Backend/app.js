@@ -1,8 +1,9 @@
 const express = require('express');
 const bodyParser = require('body-parser');
-const { executeSwap } = require('./SwapService');
 const mongoose = require('mongoose');
-const { getDynamicFee } = require('./DynamicFee');
+const { executeSwap } = require('./SwapService');
+const { verifySwapSignature } = require('./SignatureService');
+const User = require('./models/User');
 
 const app = express();
 app.use(bodyParser.json());
@@ -18,12 +19,9 @@ mongoose.connect('mongodb://localhost:27017/seagull', {
 /*
     Create / Register wallet (NON-CUSTODIAL)
 */
-const User = require('./models/User');
-
 app.post('/api/wallet', async (req, res) => {
   const { publicAddress } = req.body;
-  if (!publicAddress)
-    return res.status(400).send({ error: 'publicAddress required' });
+  if (!publicAddress) return res.status(400).send({ error: 'publicAddress required' });
 
   let user = await User.findOne({ publicAddress });
   if (!user) {
@@ -38,8 +36,7 @@ app.post('/api/wallet', async (req, res) => {
 */
 app.post('/api/addToken', async (req, res) => {
   const { walletAddress, token } = req.body;
-  if (!walletAddress || !token)
-    return res.status(400).send({ error: 'Missing fields' });
+  if (!walletAddress || !token) return res.status(400).send({ error: 'Missing fields' });
 
   const user = await User.findOne({ publicAddress: walletAddress });
   if (!user) return res.status(400).send({ error: 'Wallet not found' });
@@ -54,25 +51,39 @@ app.post('/api/addToken', async (req, res) => {
 });
 
 /*
-    Swap endpoint
+    Swap endpoint with multi-chain signature verification
 */
 app.post('/api/swap', async (req, res) => {
+  const { walletAddress, fromToken, toToken, amount, signature, chain } = req.body;
 
-  const { walletAddress, fromToken, toToken, amount, signature } = req.body;
-
-  if (!walletAddress || !fromToken || !toToken || amount === undefined || !signature)
+  if (!walletAddress || !fromToken || !toToken || amount === undefined || !signature || !chain) {
     return res.status(400).send({ error: 'Missing fields' });
+  }
 
-  const result = await executeSwap(
+  const user = await User.findOne({ publicAddress: walletAddress });
+  if (!user) return res.status(400).send({ error: 'Wallet not found' });
+
+  // Verify signature before swap
+  const isValidSignature = await verifySwapSignature({
     walletAddress,
     fromToken,
     toToken,
     amount,
-    signature
-  );
+    nonce: user.nonce,
+    signature,
+    chain
+  });
 
-  if (!result.success)
-    return res.status(400).send({ error: result.message });
+  if (!isValidSignature) return res.status(400).send({ error: 'Invalid signature' });
+
+  // Increment nonce to prevent replay attacks
+  user.nonce += 1;
+  await user.save();
+
+  // Execute swap
+  const result = await executeSwap(walletAddress, fromToken, toToken, amount, signature, chain);
+
+  if (!result.success) return res.status(400).send({ error: result.message });
 
   res.send(result);
 });
@@ -84,9 +95,9 @@ app.get('/api/balances/:walletAddress', async (req, res) => {
   const user = await User.findOne({ publicAddress: req.params.walletAddress });
   if (!user) return res.status(400).send({ error: 'Wallet not found' });
 
-  res.send({ 
-    balances: Object.fromEntries(user.balances), 
-    tokens: user.tokens 
+  res.send({
+    balances: Object.fromEntries(user.balances),
+    tokens: user.tokens
   });
 });
 
