@@ -1,5 +1,6 @@
 const mongoose = require('mongoose');
 const { SEAGULLCOIN, SEAGULLCASH, FEES } = require('./config');
+const { verifySwapSignature } = require('./SignatureService');
 const User = require('./models/User');
 const Treasury = require('./models/Treasury');
 const Pool = require('./models/Pool');
