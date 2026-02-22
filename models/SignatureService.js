@@ -25,6 +25,7 @@ async function verifySwapSignature({
   toToken,
   amount,
   nonce,
+  timestamp,
   signature,
   chain
 }) {
