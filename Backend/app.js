@@ -93,4 +93,4 @@ app.get('/api/balances/:walletAddress', async (req, res) => {
 const PORT = 3000;
 app.listen(PORT, () => console.log(`Seagull Bridge running on port ${PORT}`));
 
-module.exports = { app, ledger };
+module.exports = { app };
