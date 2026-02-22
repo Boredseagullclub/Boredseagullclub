@@ -59,25 +59,24 @@ app.post('/api/addToken', (req, res) => {
     Swap endpoint
 */
 app.post('/api/swap', async (req, res) => {
-    const { walletAddress, fromToken, toToken, amount } = req.body;
 
-    if (!walletAddress || !fromToken || !toToken || amount === undefined)
-        return res.status(400).send({ error: 'Missing fields' });
+  const { walletAddress, fromToken, toToken, amount, signature } = req.body;
 
-    const parsedAmount = Number(amount);
+  if (!walletAddress || !fromToken || !toToken || amount === undefined || !signature)
+    return res.status(400).send({ error: 'Missing fields' });
 
-    if (!Number.isFinite(parsedAmount) || parsedAmount <= 0)
-        return res.status(400).send({ error: 'Invalid amount' });
+  const result = await executeSwap(
+    walletAddress,
+    fromToken,
+    toToken,
+    amount,
+    signature
+  );
 
-    // Optional: dynamic fee future
-    // const feePercent = await getDynamicFee(fromToken, toToken, parsedAmount);
+  if (!result.success)
+    return res.status(400).send({ error: result.message });
 
-    const result = ledger.executeSwap(walletAddress, fromToken, toToken, parsedAmount);
-
-    if (!result.success)
-        return res.status(400).send({ error: result.message });
-
-    res.send(result);
+  res.send(result);
 });
 
 /*
