@@ -24,11 +24,12 @@ app.post('/api/wallet', (req, res) => {
     if (!publicAddress)
         return res.status(400).send({ error: 'publicAddress required' });
 
-    if (!ledger.users[publicAddress]) {
-        ledger.users[publicAddress] = { balances: {}, tokens: [] };
-    }
+    let user = await User.findOne({ publicAddress });
+  if (!user) {
+    user = await User.create({ publicAddress });
+  }
 
-    res.send({ success: true });
+  res.send({ success: true, wallet: user });
 });
 
 /*
