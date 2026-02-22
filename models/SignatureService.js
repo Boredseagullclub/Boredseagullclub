@@ -1,5 +1,20 @@
 const { ethers } = require('ethers');
 
+function buildSwapMessage({
+  walletAddress,
+  fromToken,
+  toToken,
+  amount,
+  nonce
+}) {
+  return `SEAGULL_SWAP:
+wallet:${walletAddress}
+from:${fromToken}
+to:${toToken}
+amount:${amount}
+nonce:${nonce}`;
+}
+
 function verifySwapSignature({
   walletAddress,
   fromToken,
@@ -9,7 +24,7 @@ function verifySwapSignature({
   signature
 }) {
 
-  const message = JSON.stringify({
+  const message = buildSwapMessage({
     walletAddress,
     fromToken,
     toToken,
@@ -22,4 +37,7 @@ function verifySwapSignature({
   return recoveredAddress.toLowerCase() === walletAddress.toLowerCase();
 }
 
-module.exports = { verifySwapSignature };
+module.exports = {
+  verifySwapSignature,
+  buildSwapMessage
+};
