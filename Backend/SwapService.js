@@ -118,7 +118,20 @@ async function settleOnChain(walletAddress, token, amount, chain) {
   }
 }
 
-async function executeSwap(walletAddress, fromToken, toToken, amount, signature, chain) {
+async function validateNonce(walletAddress, nonce, chain, session) {
+  try {
+    await Nonce.create([{ walletAddress, nonce, chain }], { session });
+    // If insertion succeeds, nonce is new → valid
+    return true;
+  } catch (err) {
+    if (err.code === 11000) {
+      throw new Error('Nonce already used — possible replay attack');
+    }
+    throw err;
+  }
+}
+
+async function executeSwap(walletAddress, fromToken, toToken, amount, nonce, signature, chain) {
   const parsedAmount = Number(amount);
 
   if (!walletAddress || !fromToken || !toToken || !chain)
@@ -140,6 +153,9 @@ async function executeSwap(walletAddress, fromToken, toToken, amount, signature,
     const user = await User.findOne({ publicAddress: walletAddress }).session(session);
     if (!user) throw new Error('Wallet not found');
 
+    // Check replay protection
+    await validateNonce(walletAddress, nonce, chain, session);
+   
     const currentBalance = Number(user.balances.get(fromToken) || 0);
     if (currentBalance < parsedAmount)
       throw new Error('Insufficient balance');
