@@ -40,10 +40,10 @@ app.post('/api/addToken', (req, res) => {
     if (!walletAddress || !token)
         return res.status(400).send({ error: 'Missing fields' });
 
-    const user = ledger.users[walletAddress];
-    if (!user)
-        return res.status(400).send({ error: 'Wallet not found' });
+    const user = await User.findOne({ publicAddress: req.params.walletAddress });
+if (!user) return res.status(400).send({ error: 'Wallet not found' });
 
+res.send({ balances: Object.fromEntries(user.balances), tokens: user.tokens });
     if (!ledger.ALL_TOKENS.includes(token))
         return res.status(400).send({ error: 'Unsupported token' });
 
