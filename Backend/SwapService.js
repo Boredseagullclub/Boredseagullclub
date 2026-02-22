@@ -6,6 +6,12 @@ const Treasury = require('./models/Treasury');
 const Pool = require('./models/Pool');
 const Transaction = require('./models/Transaction');
 
+// Blockchain SDKs
+const { ethers } = require('ethers');
+const rippleLib = require('ripple-lib');
+const StellarSdk = require('stellar-sdk');
+const { Client, PrivateKey, AccountId, TransferTransaction, Hbar } = require('@hashgraph/sdk');
+
 const DAILY_BRIDGE_CAPS = {
   SeagullCoin: 100_000,
   SeagullCash: 250_000_000
@@ -22,11 +28,88 @@ function getFee(token) {
   return 0;
 }
 
-async function executeSwap(walletAddress, fromToken, toToken, amount, signature) {
+/**
+ * On-chain settlement for different chains
+ */
+async function settleOnChain(walletAddress, token, amount, chain) {
+  switch (chain.toUpperCase()) {
+    case 'FLR':
+    case 'XDC':
+      // EVM chains
+      {
+        // Example placeholder for sending ERC20 token via ethers.js
+        const provider = new ethers.JsonRpcProvider(process.env.EVM_RPC_URL);
+        const wallet = new ethers.Wallet(process.env.BRIDGE_PRIVATE_KEY, provider);
+        const tokenContract = new ethers.Contract(
+          token.contractAddress,
+          token.abi,
+          wallet
+        );
+        const tx = await tokenContract.transfer(walletAddress, ethers.parseUnits(amount.toString(), token.decimals));
+        await tx.wait();
+      }
+      break;
 
+    case 'XRPL':
+      {
+        // XRPL Payment
+        const client = new rippleLib.Client(process.env.XRPL_RPC_URL);
+        await client.connect();
+        const prepared = await client.autofill({
+          TransactionType: 'Payment',
+          Account: process.env.BRIDGE_XRPL_ADDRESS,
+          Amount: rippleLib.xrpToDrops(amount),
+          Destination: walletAddress
+        });
+        const signed = client.sign(prepared, process.env.BRIDGE_XRPL_SECRET);
+        await client.submitAndWait(signed.tx_blob);
+        await client.disconnect();
+      }
+      break;
+
+    case 'XLM':
+      {
+        // Stellar Payment
+        const server = new StellarSdk.Server(process.env.STELLAR_HORIZON_URL);
+        const sourceKeypair = StellarSdk.Keypair.fromSecret(process.env.BRIDGE_STELLAR_SECRET);
+        const account = await server.loadAccount(sourceKeypair.publicKey());
+        const tx = new StellarSdk.TransactionBuilder(account, {
+          fee: StellarSdk.BASE_FEE,
+          networkPassphrase: StellarSdk.Networks.TESTNET // replace with MAINNET in production
+        })
+          .addOperation(StellarSdk.Operation.payment({
+            destination: walletAddress,
+            asset: StellarSdk.Asset.native(),
+            amount: amount.toString()
+          }))
+          .setTimeout(30)
+          .build();
+        tx.sign(sourceKeypair);
+        await server.submitTransaction(tx);
+      }
+      break;
+
+    case 'HBAR':
+      {
+        // Hedera HBAR transfer
+        const client = Client.forTestnet(); // or Mainnet
+        client.setOperator(process.env.BRIDGE_HBAR_ACCOUNT_ID, process.env.BRIDGE_HBAR_PRIVATE_KEY);
+        const tx = new TransferTransaction()
+          .addHbarTransfer(process.env.BRIDGE_HBAR_ACCOUNT_ID, Hbar.fromTinybars(-amount))
+          .addHbarTransfer(walletAddress, Hbar.fromTinybars(amount));
+        await tx.execute(client);
+      }
+      break;
+
+    default:
+      throw new Error(`Unsupported chain for settlement: ${chain}`);
+  }
+}
+
+async function executeSwap(walletAddress, fromToken, toToken, amount, signature, chain) {
   const parsedAmount = Number(amount);
 
-  if (!walletAddress || !fromToken || !toToken)
+  if (!walletAddress || !fromToken || !toToken || !chain)
     return { success: false, message: 'Missing parameters' };
 
   if (fromToken === toToken)
@@ -42,7 +125,6 @@ async function executeSwap(walletAddress, fromToken, toToken, amount, signature)
   session.startTransaction();
 
   try {
-
     const user = await User.findOne({ publicAddress: walletAddress }).session(session);
     if (!user) throw new Error('Wallet not found');
 
@@ -53,9 +135,6 @@ async function executeSwap(walletAddress, fromToken, toToken, amount, signature)
     const feePercent = getFee(fromToken);
     const fee = Number((parsedAmount * feePercent).toFixed(8));
     const amountAfterFee = Number((parsedAmount - fee).toFixed(8));
-
-    if (amountAfterFee <= 0)
-      throw new Error('Amount too small after fee');
 
     const today = new Date().toISOString().split('T')[0];
     const usage = user.dailyBridgeUsage.get(fromToken);
@@ -70,10 +149,9 @@ async function executeSwap(walletAddress, fromToken, toToken, amount, signature)
 
     const isBridgeSwap = !pool;
 
+    let finalAmount;
     if (isBridgeSwap) {
-
       const usedToday = usage && usage.date === today ? usage.total : 0;
-
       if ((usedToday + parsedAmount) > (DAILY_BRIDGE_CAPS[fromToken] || Infinity))
         throw new Error(`Daily bridge cap reached for ${fromToken}`);
 
@@ -83,24 +161,14 @@ async function executeSwap(walletAddress, fromToken, toToken, amount, signature)
       });
 
       user.balances.set(fromToken, currentBalance - parsedAmount);
-      user.balances.set(
-        toToken,
-        Number((user.balances.get(toToken) || 0) + amountAfterFee)
-      );
-
+      user.balances.set(toToken, Number((user.balances.get(toToken) || 0) + amountAfterFee));
+      finalAmount = amountAfterFee;
     } else {
-
       // AMM swap x*y=k
-      const reserveIn =
-        pool.tokenA === fromToken ? pool.reserveA : pool.reserveB;
-
-      const reserveOut =
-        pool.tokenA === fromToken ? pool.reserveB : pool.reserveA;
-
+      const reserveIn = pool.tokenA === fromToken ? pool.reserveA : pool.reserveB;
+      const reserveOut = pool.tokenA === fromToken ? pool.reserveB : pool.reserveA;
       const amountInWithFee = parsedAmount * (1 - feePercent);
-      const amountOut =
-        (amountInWithFee * reserveOut) /
-        (reserveIn + amountInWithFee);
+      const amountOut = (amountInWithFee * reserveOut) / (reserveIn + amountInWithFee);
 
       if (amountOut <= 0)
         throw new Error('AMM output too small');
@@ -120,11 +188,12 @@ async function executeSwap(walletAddress, fromToken, toToken, amount, signature)
       await pool.save({ session });
 
       user.balances.set(fromToken, currentBalance - parsedAmount);
-      user.balances.set(
-        toToken,
-        Number((user.balances.get(toToken) || 0) + amountOut)
-      );
+      user.balances.set(toToken, Number((user.balances.get(toToken) || 0) + amountOut));
+      finalAmount = amountOut;
     }
+
+    // **On-chain settlement**
+    await settleOnChain(walletAddress, toToken, finalAmount, chain);
 
     // Treasury update
     await Treasury.findOneAndUpdate(
@@ -140,9 +209,10 @@ async function executeSwap(walletAddress, fromToken, toToken, amount, signature)
       fromToken,
       toToken,
       amount: parsedAmount,
-      received: isBridgeSwap ? amountAfterFee : undefined,
+      received: finalAmount,
       fee,
-      type: isBridgeSwap ? 'BRIDGE' : 'AMM'
+      type: isBridgeSwap ? 'BRIDGE' : 'AMM',
+      chain
     }], { session });
 
     await session.commitTransaction();
@@ -153,16 +223,10 @@ async function executeSwap(walletAddress, fromToken, toToken, amount, signature)
       balances: Object.fromEntries(user.balances),
       fee
     };
-
   } catch (err) {
-
     await session.abortTransaction();
     session.endSession();
-
-    return {
-      success: false,
-      message: err.message
-    };
+    return { success: false, message: err.message };
   }
 }
 
