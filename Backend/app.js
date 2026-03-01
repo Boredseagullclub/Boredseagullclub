@@ -4,6 +4,8 @@ const mongoose = require('mongoose');
 const { executeSwap } = require('./SwapService');
 const { verifySwapSignature } = require('./SignatureService');
 const User = require('./models/User');
+const logger = require('./utils/logger');
+
 
 const app = express();
 app.use(bodyParser.json());
