@@ -2,6 +2,7 @@ const Deposit = require('../models/Deposit');
 const User = require('../models/User');
 const mongoose = require('mongoose');
 const logger = require('../utils/logger');
+const axios = require('axios'); // for Slack alerts
 
 // Per-chain confirmation modules
 const chainConfirmations = {
@@ -11,6 +12,10 @@ const chainConfirmations = {
   XLM: require('./ChainConfirmations/stellar'),
   HBAR: require('./ChainConfirmations/hedera'),
 };
+
+// Slack webhook for alerts
+const SLACK_WEBHOOK = process.env.SLACK_WEBHOOK_URL;
+
 
 // Wrap transactions
 async function withTransaction(fn) {
@@ -32,6 +37,16 @@ async function withTransaction(fn) {
 async function creditUser(user, token, amount, session) {
   user.balances.set(token, Number(user.balances.get(token) || 0) + amount);
   await user.save({ session });
+}
+
+// Slack alert helper
+async function sendSlackAlert(message) {
+  if (!SLACK_WEBHOOK) return;
+  try {
+    await axios.post(SLACK_WEBHOOK, { text: message });
+  } catch (err) {
+    logger.error(`[DepositEngine] Failed to send Slack alert: ${err.message}`);
+  }
 }
 
 // Process a single deposit with retries
@@ -77,21 +92,28 @@ async function processDeposit(dep, maxRetries = 3) {
       if (attempt === maxRetries) {
         await Deposit.updateOne({ _id: dep._id }, { status: 'FAILED' });
         logger.error(`[DepositEngine] Deposit ${dep._id} marked as FAILED after ${maxRetries} attempts`);
+        await sendSlackAlert(`[DepositEngine] ❌ Deposit ${dep._id} FAILED after ${maxRetries} attempts: ${err.message}`);
       } else {
-        // Optional: wait before retrying
-        await new Promise((r) => setTimeout(r, 5000));
+        // Exponential backoff before retrying
+        const delay = 1000 * 2 ** attempt;
+        logger.info(`[DepositEngine] Retrying ${dep._id} in ${delay}ms`);
+        await new Promise((r) => setTimeout(r, delay));
       }
     }
   }
 }
 
+// Run a confirmation cycle and log metrics
 async function runConfirmationCycle() {
   const deposits = await Deposit.find({ status: 'DETECTED' }).limit(50);
+  let processedCount = 0;
 
   for (const dep of deposits) {
     await processDeposit(dep);
+    processedCount++;
   }
+
+  logger.info(`[DepositEngine] Confirmation cycle completed. Processed ${processedCount} deposits.`);
 }
 
-                                                                                          
-module.exports = { runConfirmationCycle };
+  module.exports = { runConfirmationCycle };
