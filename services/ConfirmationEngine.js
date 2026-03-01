@@ -3,6 +3,7 @@ const User = require('../models/User');
 const mongoose = require('mongoose');
 const logger = require('../utils/logger');
 const axios = require('axios'); // for Slack alerts
+const depositQueue = require('./queues/depositQueue');
 
 // Per-chain confirmation modules
 const chainConfirmations = {
@@ -148,40 +149,31 @@ if (!updated) throw new Error('Deposit state changed unexpectedly');
 
 
 // runConfirmationCycle fixed
+
 async function runConfirmationCycle() {
   const deposits = await Deposit.find({ status: 'DETECTED' }).limit(50);
 
-  const metrics = {
-    processed: 0,
-    credited: 0,
-    failed: 0,
-    skipped: 0,
-  };
+  let queued = 0;
 
-  await depositQueue.add('process-deposit', {
-  depositId: dep._id.toString()
-}, {
-  attempts: 5,
-  backoff: { type: 'exponential', delay: 1000 }
-});
-
-    for (const r of results) {
-      metrics.processed++;
-
-      if (r.status === 'fulfilled') {
-        if (r.value === 'CREDITED') metrics.credited++;
-        else if (r.value === 'FAILED') metrics.failed++;
-        else if (r.value === 'SKIPPED') metrics.skipped++;
-      } else {
-        metrics.failed++;
+  for (const dep of deposits) {
+    await depositQueue.add(
+      'process-deposit',
+      { depositId: dep._id.toString() },
+      {
+        attempts: 5,
+        backoff: { type: 'exponential', delay: 1000 },
+        removeOnComplete: true,
+        removeOnFail: false
       }
-    }
+    );
+
+    queued++;
   }
 
   logger.info({
     module: 'DepositEngine',
-    msg: 'Confirmation cycle completed',
-    metrics
+    msg: 'Queued deposits for processing',
+    count: queued
   });
 }
 
