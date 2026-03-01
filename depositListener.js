@@ -21,7 +21,7 @@ async function startEvmListener(chain) {
           walletAddress: tx.from,
           chain,
           token: 'SeagullCoin',
-          txHash: tx.hash,
+          txHash: { type: String, unique: true, required: true },
           amount,
           confirmations: 0
         });
