@@ -53,15 +53,16 @@ async function sendSlackAlert(message) {
 async function processDeposit(dep, maxRetries = 3) {
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
-      await withTransaction(async (session) => {
+      const result = await withTransaction(async (session) => {
         const locked = await Deposit.findOneAndUpdate(
           { _id: dep._id, status: 'DETECTED' },
           { status: 'PROCESSING' },
           { session, new: true }
         );
+
         if (!locked) {
           logger.warn(`[DepositEngine] Deposit ${dep._id} already locked, skipping`);
-          return;
+          return 'SKIPPED';
         }
 
         logger.info(`[DepositEngine] Processing ${dep._id} on ${dep.chain} (attempt ${attempt})`);
@@ -71,9 +72,13 @@ async function processDeposit(dep, maxRetries = 3) {
 
         const confirmed = await confirmFn(dep);
         if (!confirmed) {
-          await Deposit.updateOne({ _id: dep._id }, { status: 'DETECTED' }, { session });
+          await Deposit.updateOne(
+            { _id: dep._id },
+            { status: 'DETECTED' },
+            { session }
+          );
           logger.info(`[DepositEngine] Deposit ${dep._id} not yet confirmed`);
-          return;
+          return 'SKIPPED';
         }
 
         const user = await User.findOne({ publicAddress: dep.walletAddress }).session(session);
@@ -81,24 +86,32 @@ async function processDeposit(dep, maxRetries = 3) {
 
         await creditUser(user, dep.token, dep.amount, session);
 
-        await Deposit.updateOne({ _id: dep._id }, { status: 'CREDITED' }, { session });
+        await Deposit.updateOne(
+          { _id: dep._id },
+          { status: 'CREDITED' },
+          { session }
+        );
 
         logger.info(`[DepositEngine] Deposit ${dep._id} credited successfully`);
+        return 'CREDITED';
       });
 
-      break; // Exit retry loop if successful
+      return result;
+
     } catch (err) {
       logger.error(`[DepositEngine] Failed to process ${dep._id} on attempt ${attempt}: ${err.message}`);
+
       if (attempt === maxRetries) {
         await Deposit.updateOne({ _id: dep._id }, { status: 'FAILED' });
-        logger.error(`[DepositEngine] Deposit ${dep._id} marked as FAILED after ${maxRetries} attempts`);
-        await sendSlackAlert(`[DepositEngine] ❌ Deposit ${dep._id} FAILED after ${maxRetries} attempts: ${err.message}`);
-      } else {
-        // Exponential backoff before retrying
-        const delay = 1000 * 2 ** attempt;
-        logger.info(`[DepositEngine] Retrying ${dep._id} in ${delay}ms`);
-        await new Promise((r) => setTimeout(r, delay));
+        await sendSlackAlert(
+          `[DepositEngine] ❌ Deposit ${dep._id} FAILED after ${maxRetries} attempts: ${err.message}`
+        );
+        return 'FAILED';
       }
+
+      const delay = 1000 * 2 ** attempt;
+      logger.info(`[DepositEngine] Retrying ${dep._id} in ${delay}ms`);
+      await new Promise((r) => setTimeout(r, delay));
     }
   }
 }
@@ -106,14 +119,27 @@ async function processDeposit(dep, maxRetries = 3) {
 // Run a confirmation cycle and log metrics
 async function runConfirmationCycle() {
   const deposits = await Deposit.find({ status: 'DETECTED' }).limit(50);
-  let processedCount = 0;
+
+  const metrics = {
+    processed: 0,
+    credited: 0,
+    failed: 0,
+    skipped: 0,
+  };
 
   for (const dep of deposits) {
-    await processDeposit(dep);
-    processedCount++;
+    const result = await processDeposit(dep);
+    metrics.processed++;
+
+    if (result === 'CREDITED') metrics.credited++;
+    if (result === 'FAILED') metrics.failed++;
+    if (result === 'SKIPPED') metrics.skipped++;
   }
 
-  logger.info(`[DepositEngine] Confirmation cycle completed. Processed ${processedCount} deposits.`);
+  logger.info({
+    msg: '[DepositEngine] Confirmation cycle completed',
+    metrics
+  });
 }
 
   module.exports = { runConfirmationCycle };
