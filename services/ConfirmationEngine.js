@@ -35,7 +35,10 @@ async function withTransaction(fn) {
 
 // Helper to credit user balances
 async function creditUser(user, token, amount, session) {
-  user.balances.set(token, Number(user.balances.get(token) || 0) + amount);
+  user.balances.set(
+    token,
+    BigInt(user.balances.get(token) || 0n) + BigInt(amount)
+  );
   await user.save({ session });
 }
 
@@ -56,7 +59,7 @@ async function processDeposit(dep, maxRetries = 3) {
       const result = await withTransaction(async (session) => {
 
         const locked = await Deposit.findOneAndUpdate(
-          { _id: dep._id, status: { $in: ['DETECTED', 'PROCESSING'] } },
+          { _id: dep._id, status: 'DETECTED' },
           { status: 'PROCESSING' },
           { session, new: true }
         );
@@ -80,14 +83,14 @@ async function processDeposit(dep, maxRetries = 3) {
         const confirmFn = chainConfirmations[dep.chain];
         if (!confirmFn) throw new Error('Unsupported chain');
 
-        const confirmed = await confirmFn(dep);
-
+        const { confirmed, confirmations } = await confirmFn(dep);
+        
         if (!confirmed) {
           await Deposit.updateOne(
-            { _id: dep._id },
-            { status: 'DETECTED' },
-            { session }
-          );
+  { _id: dep._id },
+  { $set: { confirmations } },
+  { session }
+);
           return 'SKIPPED';
         }
 
@@ -96,11 +99,13 @@ async function processDeposit(dep, maxRetries = 3) {
 
         await creditUser(user, dep.token, dep.amount, session);
 
-        await Deposit.updateOne(
-          { _id: dep._id },
-          { status: 'CREDITED' },
-          { session }
-        );
+        const updated = await Deposit.findOneAndUpdate(
+  { _id: dep._id, status: 'PROCESSING' },
+  { status: 'CREDITED', creditedAt: new Date() },
+  { session, new: true }
+);
+
+if (!updated) throw new Error('Deposit state changed unexpectedly');
 
         logger.info({
           module: 'DepositEngine',
@@ -141,7 +146,8 @@ async function processDeposit(dep, maxRetries = 3) {
   }
 }
 
-// Run a confirmation cycle and log metrics
+
+// runConfirmationCycle fixed
 async function runConfirmationCycle() {
   const deposits = await Deposit.find({ status: 'DETECTED' }).limit(50);
 
@@ -152,17 +158,29 @@ async function runConfirmationCycle() {
     skipped: 0,
   };
 
-  for (const dep of deposits) {
-    const result = await processDeposit(dep);
-    metrics.processed++;
+  for (let i = 0; i < deposits.length; i += 10) {
+    const batch = deposits.slice(i, i + 10);
 
-    if (result === 'CREDITED') metrics.credited++;
-    if (result === 'FAILED') metrics.failed++;
-    if (result === 'SKIPPED') metrics.skipped++;
+    const results = await Promise.allSettled(
+      batch.map(dep => processDeposit(dep))
+    );
+
+    for (const r of results) {
+      metrics.processed++;
+
+      if (r.status === 'fulfilled') {
+        if (r.value === 'CREDITED') metrics.credited++;
+        else if (r.value === 'FAILED') metrics.failed++;
+        else if (r.value === 'SKIPPED') metrics.skipped++;
+      } else {
+        metrics.failed++;
+      }
+    }
   }
 
   logger.info({
-    msg: '[DepositEngine] Confirmation cycle completed',
+    module: 'DepositEngine',
+    msg: 'Confirmation cycle completed',
     metrics
   });
 }
