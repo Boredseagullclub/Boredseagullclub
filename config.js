@@ -1,4 +1,4 @@
-// config.jsmodule.exports = {
+// config.js
 module.exports = {
 CHAINS: {
     XRP: {
