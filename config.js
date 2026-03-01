@@ -1,22 +1,89 @@
-// config.js
+// config.jsmodule.exports = {
 module.exports = {
-    SEAGULLCOIN: {
-        XRP: { type: "XRP", issuer: "rnqiA8vuNriU9pqD1ZDGFH8ajQBL25Wkno" },
-        XDC: { type: "EVM", contract: "0xd38109f587bd0326cad60a18cf3c1ecd546809a6" },
-        FLR: { type: "EVM", contract: "0x495dafa49ed19f3bfc3ddeb7e048f20ff149778f" },
+CHAINS: {
+    XRP: {
+      type: "XRPL",
+      nativeSymbol: "XRP",
+      decimals: 6,
+      atomicUnit: "drops"
     },
-    SEAGULLCASH: {
-        XRP: { type: "XRP", issuer: "rNHeGnj4kqGSVyFzDcoyi3gsp1bdPuGeNK" },
-        XLM: { type: "XLM", issuer: "GBC2VA3YMAIVB3A77VNRPKMQI3RAPDUDDP7JI2PE426MGKDDJFPRVWP7" },
-        HBAR: { 
-            type: "HBAR", 
-            issuer: "0.0.3116734", 
-            evm: "0x00000000000000000000000000000000002f8ebe"
-        },
-        ALGO: { type: "ALGO", issuer: "EEFJ2OW6ITKQ46QGS5THTLA2LDPE5P64YHPBPSR4XOFCDQ44ODCQG37G7U" }
+    XDC: {
+      type: "EVM",
+      nativeSymbol: "XDC",
+      decimals: 18,
+      atomicUnit: "wei"
     },
-    FEES: {
-        SEAGULLCOIN: 0.025, // 2.5%
-        SEAGULLCASH: 0.01    // 1%
+    FLR: {
+      type: "EVM",
+      nativeSymbol: "FLR",
+      decimals: 18,
+      atomicUnit: "wei"
+    },
+    XLM: {
+      type: "STELLAR",
+      nativeSymbol: "XLM",
+      decimals: 7,
+      atomicUnit: "stroops"
+    },
+    HBAR: {
+      type: "HEDERA",
+      nativeSymbol: "HBAR",
+      decimals: 8,
+      atomicUnit: "tinybar"
+    },
+    ALGO: {
+      type: "ALGORAND",
+      nativeSymbol: "ALGO",
+      decimals: 6,
+      atomicUnit: "microalgo"
     }
+  },
+
+  TOKENS: {
+    SEAGULLCOIN: {
+      layer: "L2",
+      networks: {
+        XRP: {
+          issuer: "rnqiA8vuNriU9pqD1ZDGFH8ajQBL25Wkno",
+          decimals: 6
+        },
+        XDC: {
+          contract: "0xd38109f587bd0326cad60a18cf3c1ecd546809a6",
+          decimals: 18
+        },
+        FLR: {
+          contract: "0x495dafa49ed19f3bfc3ddeb7e048f20ff149778f",
+          decimals: 18
+        }
+      }
+    },
+
+    SEAGULLCASH: {
+      layer: "L2",
+      networks: {
+        XRP: {
+          issuer: "rNHeGnj4kqGSVyFzDcoyi3gsp1bdPuGeNK",
+          decimals: 6
+        },
+        XLM: {
+          issuer: "GBC2VA3YMAIVB3A77VNRPKMQI3RAPDUDDP7JI2PE426MGKDDJFPRVWP7",
+          decimals: 7
+        },
+        HBAR: {
+          issuer: "0.0.3116734",
+          evmAddress: "0x00000000000000000000000000000000002f8ebe",
+          decimals: 8
+        },
+        ALGO: {
+          issuer: "EEFJ2OW6ITKQ46QGS5THTLA2LDPE5P64YHPBPSR4XOFCDQ44ODCQG37G7U",
+          decimals: 6
+        }
+      }
+    }
+  },
+
+  FEES: {
+    SEAGULLCOIN: 0.025,
+    SEAGULLCASH: 0.01
+  }
 };
