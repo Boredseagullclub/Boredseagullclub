@@ -10,11 +10,11 @@ const userSchema = new mongoose.Schema({
 
   // Memo routing (XRP/XLM/HBAR/ALGO)
   depositTag: {
-    type: Number,
-    unique: true,
-    sparse: true,
-    index: true
-  },
+  type: String,
+  unique: true,
+  sparse: true,
+  index: true
+},
 
   // EVM deposit addresses
   evmDeposits: {
