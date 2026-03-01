@@ -5,6 +5,8 @@ const { executeSwap } = require('./SwapService');
 const { verifySwapSignature } = require('./SignatureService');
 const User = require('./models/User');
 const logger = require('./utils/logger');
+const { runConfirmationCycle } = require('./services/ConfirmationEngine');
+const { SEAGULLCOIN, SEAGULLCASH } = require('./config');
 
 
 const app = express();
@@ -90,6 +92,17 @@ app.post('/api/swap', async (req, res) => {
   res.send(result);
 });
 
+// Manually trigger deposit confirmation cycle
+app.post('/api/confirmDeposits', async (req, res) => {
+  try {
+    await runConfirmationCycle();
+    res.send({ success: true, message: 'Deposit confirmation...' });
+  } catch (err) {
+    logger.error({ module: 'API', error: err.message });
+    res.status(500).send({ success: false, error: err.message });
+  }
+});
+
 /*
     Get user balances
 */
@@ -97,11 +110,31 @@ app.get('/api/balances/:walletAddress', async (req, res) => {
   const user = await User.findOne({ publicAddress: req.params.walletAddress });
   if (!user) return res.status(400).send({ error: 'Wallet not found' });
 
+  // Include L2 tokens
+  const balances = Object.fromEntries(user.balances);
+
+  // Optionally, mark Layer 2 explicitly
+  const l2Tokens = {};
+  for (const token of user.tokens) {
+    if (
+      Object.values(SEAGULLCOIN).some(t => t.contract && t.contract === token) ||
+      Object.values(SEAGULLCASH).some(t => t.contract && t.contract === token)
+    ) {
+      l2Tokens[token] = { ...balances[token], layer2: true };
+    }
+  }
+
   res.send({
-    balances: Object.fromEntries(user.balances),
+    balances,
+    l2Tokens,
     tokens: user.tokens
   });
 });
+
+// Auto-run deposit confirmation every 30s
+setInterval(() => {
+  runConfirmationCycle().catch(err => logger.error({ module: 'DepositEngine', error: err.message }));
+}, 30000);
 
 const PORT = 3000;
 app.listen(PORT, () => console.log(`Seagull Bridge running on port ${PORT}`));
