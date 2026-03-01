@@ -158,12 +158,12 @@ async function runConfirmationCycle() {
     skipped: 0,
   };
 
-  for (let i = 0; i < deposits.length; i += 10) {
-    const batch = deposits.slice(i, i + 10);
-
-    const results = await Promise.allSettled(
-      batch.map(dep => processDeposit(dep))
-    );
+  await depositQueue.add('process-deposit', {
+  depositId: dep._id.toString()
+}, {
+  attempts: 5,
+  backoff: { type: 'exponential', delay: 1000 }
+});
 
     for (const r of results) {
       metrics.processed++;
