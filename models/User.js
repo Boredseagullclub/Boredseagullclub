@@ -1,20 +1,51 @@
 const mongoose = require('mongoose');
 
-const balanceSchema = new mongoose.Schema({}, { strict: false });
-
 const userSchema = new mongoose.Schema({
-  publicAddress: { type: String, required: true, unique: true },
-  tokens: { type: [String], default: [] },
-  balances: { type: Map, of: Number, default: {} },
-  nonce: { type: Number, default: 0 },
+  publicAddress: {
+    type: String,
+    required: true,
+    unique: true,
+    index: true
+  },
+
+  // Memo routing (XRP/XLM/HBAR/ALGO)
+  depositTag: {
+    type: Number,
+    unique: true,
+    sparse: true,
+    index: true
+  },
+
+  // EVM deposit addresses
+  evmDeposits: {
+    XDC: { type: String },
+    FLR: { type: String }
+  },
+
+  tokens: {
+    type: [String],
+    default: []
+  },
+
+  // Store atomic values as strings
+  balances: {
+    type: Map,
+    of: String,
+    default: {}
+  },
+
+  nonce: {
+    type: Number,
+    default: 0
+  },
+
+  // YYYY-MM-DD -> atomic usage
   dailyBridgeUsage: {
     type: Map,
-    of: new mongoose.Schema({
-      date: String, // YYYY-MM-DD
-      total: { type: Number, default: 0 }
-    }),
+    of: String,
     default: {}
   }
+
 }, { timestamps: true });
 
 module.exports = mongoose.model('User', userSchema);
