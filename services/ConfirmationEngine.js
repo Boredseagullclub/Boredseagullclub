@@ -38,7 +38,7 @@ async function withTransaction(fn) {
 async function creditUser(user, token, amount, session) {
   user.balances.set(
     token,
-    BigInt(user.balances.get(token) || 0n) + BigInt(amount)
+    BigInt(user.balances.get(token) || "0") + BigInt(amount)
   );
   await user.save({ session });
 }
