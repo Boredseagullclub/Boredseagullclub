@@ -85,7 +85,7 @@ app.post('/api/swap', async (req, res) => {
   await user.save();
 
   // Execute swap
-  const result = await executeSwap(walletAddress, fromToken, toToken, amount, signature, chain);
+  const result = await executeSwap(walletAddress, fromToken, toToken, amount, user.nonce, chain);
 
   if (!result.success) return res.status(400).send({ error: result.message });
 
@@ -101,6 +101,32 @@ app.post('/api/confirmDeposits', async (req, res) => {
     logger.error({ module: 'API', error: err.message });
     res.status(500).send({ success: false, error: err.message });
   }
+});
+
+// Get deposit info
+app.get('/api/deposit/:walletAddress/:chain', async (req, res) => {
+  const { walletAddress, chain } = req.params;
+  const user = await User.findOne({ publicAddress: walletAddress });
+  if (!user) return res.status(400).send({ error: 'Wallet not found' });
+
+  const depositData = {};
+  if (['XRP','XLM','HBAR','ALGO'].includes(chain.toUpperCase())) {
+    depositData.address = walletAddress;
+    depositData.memo = user.depositTag || null;
+  } else {
+    depositData.address = user.evmDeposits[chain] || null;
+  }
+
+  res.send(depositData);
+});
+
+// Transaction history
+app.get('/api/history/:walletAddress', async (req, res) => {
+  const user = await User.findOne({ publicAddress: req.params.walletAddress });
+  if (!user) return res.status(400).send({ error: 'Wallet not found' });
+
+  const history = await Ledger.find({ userId: user._id }).sort({ createdAt: -1 }).limit(50);
+  res.send(history);
 });
 
 /*
