@@ -10,4 +10,13 @@ const ledgerSchema = new mongoose.Schema({
   createdAt: { type: Date, default: Date.now }
 });
 
+// Prevent duplicate credits
+ledgerSchema.index(
+  { txHash: 1, userId: 1, token: 1 },
+  { unique: true, sparse: true }
+);
+
+// Fast user transaction history
+ledgerSchema.index({ userId: 1, createdAt: -1 });
+
 module.exports = mongoose.model('Ledger', ledgerSchema);
