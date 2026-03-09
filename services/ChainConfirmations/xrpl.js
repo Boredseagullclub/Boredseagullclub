@@ -2,6 +2,7 @@ const { Client } = require('xrpl');
 
 module.exports = async function confirmXrpl(dep, expectedTag) {
   const client = new Client(process.env.XRPL_RPC_URL);
+
   try {
     await client.connect();
 
@@ -10,27 +11,39 @@ module.exports = async function confirmXrpl(dep, expectedTag) {
       transaction: dep.txHash
     });
 
-    // 1. Must be validated by the network
-    if (!tx.result.validated) return { confirmed: false };
+    const result = tx.result;
 
-    // 2. Must be a successful payment
-    if (tx.result.meta.TransactionResult !== 'tesSUCCESS') {
+    // Must be validated
+    if (!result.validated) return { confirmed: false };
+
+    // Must be payment transaction
+    if (result.TransactionType !== 'Payment')
       return { confirmed: false };
-    }
 
-    // 3. CRITICAL: Verify the Destination Tag matches the user
-    // On XRPL, it's tx.result.Destination
-    if (Number(tx.result.DestinationTag) !== Number(expectedTag)) {
+    // Must succeed
+    if (result.meta.TransactionResult !== 'tesSUCCESS')
+      return { confirmed: false };
+
+    // Must go to deposit wallet
+    if (result.Destination !== process.env.XRPL_DEPOSIT_ADDRESS)
+      return { confirmed: false };
+
+    // Destination tag must match user
+    if (Number(result.DestinationTag) !== Number(expectedTag))
       return { confirmed: false, error: 'Destination Tag mismatch' };
-    }
 
-    // 4. Verification of the Amount (prevents "Partial Payment" exploits)
-    // Sometimes 'Amount' is an object (for issued tokens) or a string (for XRP)
-    const deliveredAmount = tx.result.meta.delivered_amount || tx.result.Amount;
-    // You should compare 'deliveredAmount' to 'dep.amount' here
+    // Partial payment protection
+    const deliveredAmount = result.meta.delivered_amount;
 
-    return { confirmed: true };
-    
+    if (!deliveredAmount)
+      return { confirmed: false };
+
+    return {
+      confirmed: true,
+      amount: deliveredAmount,
+      ledger: result.ledger_index
+    };
+
   } catch (err) {
     console.error("XRPL Confirm Error:", err.message);
     return { confirmed: false };
