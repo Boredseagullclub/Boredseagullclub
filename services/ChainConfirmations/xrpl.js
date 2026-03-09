@@ -13,5 +13,9 @@ module.exports = async function confirmXrpl(dep) {
 
   if (!tx.result.validated) return false;
 
-  return true; // XRPL is final once validated
+  if (tx.result.meta.TransactionResult !== 'tesSUCCESS') {
+    return false;
+  }
+
+  return true;
 };
