@@ -14,7 +14,7 @@ app.use(bodyParser.json());
 /*
     MongoDB
 */
-mongoose.connect('mongodb://localhost:27017/seagull', {
+mongoose.connect(process.env.MONGO_URI || 'mongodb://localhost:27017/seagull', {
   useNewUrlParser: true,
   useUnifiedTopology: true
 })
