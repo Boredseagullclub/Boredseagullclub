@@ -6,31 +6,35 @@ async function startXrplListener() {
   const client = new Client(process.env.XRPL_WS_URL);
   const depositAddress = process.env.XRPL_DEPOSIT_ADDRESS;
 
-  // --- Batching setup ---
+// --- High-throughput batching setup ---
   const depositBuffer = [];
   const userBalances = new Map(); // { userId: { token: totalAmount } }
 
-  // Flush deposits & balances periodically (1 sec, tweak for high volume)
+  // Flush deposits & balances periodically (tweak interval for volume)
   const flushDeposits = async () => {
     if (depositBuffer.length === 0) return;
 
-    // Insert all deposits at once
-    await Deposit.insertMany(depositBuffer.splice(0));
-
-    // Bulk update user balances
+    const depositsToInsert = depositBuffer.splice(0);
     const bulkOps = [];
+
+    // Aggregate balance increments per user
     for (const [userId, tokens] of userBalances) {
       const inc = {};
       for (const [token, amt] of Object.entries(tokens)) inc[`balances.${token}`] = amt;
       bulkOps.push({ updateOne: { filter: { _id: userId }, update: { $inc: inc } } });
     }
-    if (bulkOps.length) await User.bulkWrite(bulkOps);
 
     userBalances.clear();
+
+    // Write deposits & balances in parallel
+    await Promise.all([
+      depositsToInsert.length && Deposit.insertMany(depositsToInsert),
+      bulkOps.length && User.bulkWrite(bulkOps)
+    ]);
   };
 
-  // Flush every 1 second
-  setInterval(flushDeposits, 1000);
+  // Flush every 500ms for ultra-high volume
+  setInterval(flushDeposits, 500);
 
   // ── Reconnection logic ──
   let reconnectAttempts = 0;
