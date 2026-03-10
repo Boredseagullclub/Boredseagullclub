@@ -6,17 +6,42 @@ async function startXrplListener() {
   const client = new Client(process.env.XRPL_WS_URL);
   const depositAddress = process.env.XRPL_DEPOSIT_ADDRESS;
 
+  // --- Batching setup ---
+  const depositBuffer = [];
+  const userBalances = new Map(); // { userId: { token: totalAmount } }
+
+  // Flush deposits & balances periodically (1 sec, tweak for high volume)
+  const flushDeposits = async () => {
+    if (depositBuffer.length === 0) return;
+
+    // Insert all deposits at once
+    await Deposit.insertMany(depositBuffer.splice(0));
+
+    // Bulk update user balances
+    const bulkOps = [];
+    for (const [userId, tokens] of userBalances) {
+      const inc = {};
+      for (const [token, amt] of Object.entries(tokens)) inc[`balances.${token}`] = amt;
+      bulkOps.push({ updateOne: { filter: { _id: userId }, update: { $inc: inc } } });
+    }
+    if (bulkOps.length) await User.bulkWrite(bulkOps);
+
+    userBalances.clear();
+  };
+
+  // Flush every 1 second
+  setInterval(flushDeposits, 1000);
+
   // ── Reconnection logic ──
   let reconnectAttempts = 0;
-  const maxReconnectAttempts = 20;          // High but finite to prevent infinite loops
-  const baseDelayMs = 1000;                 // Start at 1s
-  const maxDelayMs = 60000;                 // Cap at 60s
+  const maxReconnectAttempts = 20;
+  const baseDelayMs = 1000;
+  const maxDelayMs = 60000;
 
   client.on("disconnected", (code) => {
     console.error(`XRPL disconnected (code: ${code || 'unknown'})`);
     if (reconnectAttempts >= maxReconnectAttempts) {
       console.error(`Max reconnect attempts (${maxReconnectAttempts}) reached. Stopping listener.`);
-      // Optional: process.exit(1); or send alert (e.g., via your logger)
       return;
     }
 
@@ -37,23 +62,15 @@ async function startXrplListener() {
         });
         console.log("Re-subscribed to deposit address");
 
-        reconnectAttempts = 0; // Reset on success
+        reconnectAttempts = 0;
       } catch (err) {
         console.error("Reconnect failed:", err.message);
-        // 'disconnected' will fire again if connect() fails → next backoff
       }
     }, delay);
   });
 
-  // Catch general errors (e.g., connection refused, auth issues)
-  client.on("error", (error) => {
-    console.error("XRPL Client error:", error);
-  });
-
-  // Optional: Log successful connects (helps debugging)
-  client.on("connected", () => {
-    console.log("XRPL connection established (or re-established)");
-  });
+  client.on("error", (error) => console.error("XRPL Client error:", error));
+  client.on("connected", () => console.log("XRPL connection established (or re-established)"));
 
   // ── Initial connection & subscribe ──
   try {
@@ -67,11 +84,10 @@ async function startXrplListener() {
     console.log("XRPL listener running - subscribed to deposit address");
   } catch (err) {
     console.error("Initial XRPL connection/subscribe failed:", err.message);
-    // You could manually trigger a reconnect here, but the 'disconnected' handler will catch it
-    return; // Or throw to crash early if critical
+    return;
   }
 
-  // ── Your existing in-memory cache and transaction handler ──
+  // ── Transaction handler ──
   const userCache = new Map();
 
   client.on("transaction", async (event) => {
@@ -90,8 +106,7 @@ async function startXrplListener() {
     if (typeof meta.delivered_amount === "string") {
       amount = meta.delivered_amount;
     } else {
-      const currency = meta.delivered_amount.currency;
-      const issuer = meta.delivered_amount.issuer;
+      const { currency, issuer } = meta.delivered_amount;
 
       if (currency === "SeagullCoin" && issuer === "rnqiA8vuNriU9pqD1ZDGFH8ajQBL25Wkno") {
         token = "SeagullCoin";
@@ -104,7 +119,7 @@ async function startXrplListener() {
       }
     }
 
-    // Duplicate check
+    // Duplicate prevention
     const exists = await Deposit.findOne({ txHash: tx.hash });
     if (exists) return;
 
@@ -116,8 +131,8 @@ async function startXrplListener() {
       userCache.set(tx.DestinationTag, user);
     }
 
-    // Create deposit & credit balance
-    await Deposit.create({
+    // --- Buffer deposit and aggregate balances ---
+    depositBuffer.push({
       walletAddress: tx.Account,
       chain: "XRPL",
       token,
@@ -126,10 +141,9 @@ async function startXrplListener() {
       confirmations: 1,
     });
 
-    await User.updateOne(
-      { _id: user._id },
-      { $inc: { [`balances.${token}`]: Number(amount) } }
-    );
+    if (!userBalances.has(user._id)) userBalances.set(user._id, {});
+    const userTokens = userBalances.get(user._id);
+    userTokens[token] = (userTokens[token] || 0) + Number(amount);
   });
 }
 
