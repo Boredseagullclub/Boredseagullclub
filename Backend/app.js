@@ -5,7 +5,6 @@ const walletRoutes = require('./routes/walletRoutes');
 const logger = require('./utils/logger');
 const { runConfirmationCycle } = require('./services/ConfirmationEngine');
 
-const startEvmListener = require('./evmListener');
 const startXrplListener = require('./xrplListener');
 
 
@@ -23,8 +22,7 @@ mongoose.connect('mongodb://localhost:27017/seagull', {
   console.log('MongoDB connected');
 
   // Start deposit listeners after DB is ready
-  startEvmListener("FLR").catch(console.error);
-  startXrplListener().catch(console.error);
+    startXrplListener().catch(console.error);
 
 })
 .catch(err => console.error('MongoDB connection error:', err));
