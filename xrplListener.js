@@ -17,34 +17,44 @@ async function startXrplListener() {
   console.log("XRPL listener running");
 
   client.on("transaction", async (event) => {
+  if (!event.validated) return;
 
-    if (!event.validated) return;
+  const tx = event.transaction;
+  const meta = event.meta;
 
-    const tx = event.transaction;
-    const meta = event.meta;
+  // Only handle payments to your deposit address
+  if (tx.TransactionType !== "Payment") return;
+  if (meta.TransactionResult !== "tesSUCCESS") return;
+  if (tx.Destination !== depositAddress) return;
 
-    if (tx.TransactionType !== "Payment") return;
+  // --- ADD THIS CHECK HERE ---
+  if (
+    typeof meta.delivered_amount === 'string' || // XRP
+    meta.delivered_amount.currency !== 'SeagullCoin' ||
+    meta.delivered_amount.issuer !== 'rnqiA8vuNriU9pqD1ZDGFH8ajQBL25Wkno'
+  ) {
+    return; // Ignore non-SeagullCoin payments
+  }
 
-    if (meta.TransactionResult !== "tesSUCCESS") return;
+  // Optional: duplicate deposit prevention
+  const exists = await Deposit.findOne({ txHash: tx.hash });
+  if (exists) return;
 
-    if (tx.Destination !== depositAddress) return;
+  // Credit the deposit
+  const amount = meta.delivered_amount.value || meta.delivered_amount; // XRP is string, others have value
+  const tag = tx.DestinationTag;
 
-    const amount = meta.delivered_amount;
-    if (!amount) return;
+  const user = await User.findOne({ destinationTag: tag });
+  if (!user) return;
 
-    const tag = tx.DestinationTag;
-
-    const user = await User.findOne({ destinationTag: tag });
-    if (!user) return;
-
-    await Deposit.create({
-      walletAddress: tx.Account,
-      chain: "XRPL",
-      token: "SeagullCoin",
-      txHash: tx.hash,
-      amount,
-      confirmations: 1
-    });
+  await Deposit.create({
+    walletAddress: tx.Account,
+    chain: "XRPL",
+    token: "SeagullCoin",
+    txHash: tx.hash,
+    amount,
+    confirmations: 1
+  });
 
   });
 
