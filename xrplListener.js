@@ -154,7 +154,7 @@ async function startXrplListener() {
     // User lookup with cache
     let user = userCache.get(tx.DestinationTag);
     if (!user) {
-      user = await User.findOne({ destinationTag: tx.DestinationTag });
+      user = await User.findOne({ depositTag: tx.DestinationTag });
       if (!user) return;
       userCache.set(tx.DestinationTag, user);
     }
