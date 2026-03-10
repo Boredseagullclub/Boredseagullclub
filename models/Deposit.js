@@ -4,14 +4,33 @@ const depositSchema = new mongoose.Schema({
   userId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: "User",
-    index: true
+    index: true,
+    required: true
   },
-  walletAddress: String,
-  chain: String,
-  token: String,
-  txHash: String,
-  amount: mongoose.Schema.Types.Decimal128,
-  confirmations: Number,
+  walletAddress: {
+    type: String,
+    required: true
+  },
+  chain: {
+    type: String,
+    required: true
+  },
+  token: {
+    type: String,
+    required: true
+  },
+  txHash: {
+    type: String,
+    required: true
+  },
+  amount: {
+    type: mongoose.Schema.Types.Decimal128,
+    required: true
+  },
+  confirmations: {
+    type: Number,
+    default: 1
+  },
   status: {
     type: String,
     enum: ['DETECTED', 'CONFIRMED', 'CREDITED'],
@@ -19,7 +38,10 @@ const depositSchema = new mongoose.Schema({
   }
 }, { timestamps: true });
 
+// Unique index per chain + txHash
 depositSchema.index({ txHash: 1, chain: 1 }, { unique: true });
+
+// Index for status queries
 depositSchema.index({ status: 1 });
 
 module.exports = mongoose.model('Deposit', depositSchema);
