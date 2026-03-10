@@ -74,7 +74,10 @@ async function startXrplListener() {
   });
 
   client.on("error", (error) => console.error("XRPL Client error:", error));
-  client.on("connected", () => console.log("XRPL connection established (or re-established)"));
+    client.on("connected", async () => {
+    console.log("XRPL connection established");
+    await scanGaps(); 
+  });
 
   // ── Initial connection & subscribe ──
   try {
@@ -91,6 +94,27 @@ async function startXrplListener() {
     return;
   }
 
+   const scanGaps = async () => {
+    console.log("Scanning last 100 ledgers for misses...");
+    try {
+      const response = await client.request({
+        command: "account_tx",
+        account: depositAddress,
+        ledger_index_min: -1, 
+        limit: 100
+      });
+      for (const item of response.result.transactions) {
+        // This triggers your 'transaction' listener logic below
+        client.emit("transaction", { 
+          validated: true, 
+          transaction: item.tx, 
+          meta: item.meta 
+        });
+      }
+    } catch (e) { console.error("Gap scan failed:", e.message); }
+  };
+
+  
   // ── Transaction handler ──
   const userCache = new Map();
 
@@ -145,8 +169,10 @@ async function startXrplListener() {
       confirmations: 1,
     });
 
-    if (!userBalances.has(user._id)) userBalances.set(user._id, {});
-    const userTokens = userBalances.get(user._id);
+    
+    const userId = user._id.toString();
+    if (!userBalances.has(userId)) userBalances.set(userId, {});
+        const userTokens = userBalances.get(userId); // You missed the .get(userId)
     userTokens[token] = (userTokens[token] || 0) + Number(amount);
   });
 }
