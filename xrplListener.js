@@ -5,6 +5,9 @@ const Decimal = require("decimal.js");
 const Deposit = require("./models/Deposit");
 const User = require("./models/User");
 const Ledger = require("./models/Ledger");
+const LRU = require("lru-cache");
+const userCache = new LRU({ max: 5000, ttl: 1000 * 60 * 60 }); // 5000 entries, expire after 1 hour
+const config = require("./config");  // adjust path if needed, e.g. ./config.js
 
 let highestSeenLedger = 0;
 
@@ -59,7 +62,21 @@ async function startXrplListener() {
     }
   };
 
-  setInterval(flushDeposits, 500);
+  setInterval(flushDeposits, 5000);
+
+  let isShuttingDown = false;
+
+async function gracefulShutdown() {
+  if (isShuttingDown) return;
+  isShuttingDown = true;
+  console.log("XRPL listener shutting down — flushing final buffer...");
+  await flushDeposits();
+  client.disconnect().catch(() => {});
+  process.exit(0);
+}
+
+process.on("SIGINT", gracefulShutdown);
+process.on("SIGTERM", gracefulShutdown);
 
   // --- Reconnection logic ---
   let reconnectAttempts = 0;
