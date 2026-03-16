@@ -33,28 +33,39 @@ router.post('/wallet', async (req, res) => {
     Add token
 */
 router.post('/addToken', async (req, res) => {
-
   const { walletAddress, token } = req.body;
 
-  if (!walletAddress || !token)
-    return res.status(400).send({ error: 'Missing fields' });
-
-  const user = await User.findOne({ publicAddress: walletAddress });
-
-  if (!user)
-    return res.status(400).send({ error: 'Wallet not found' });
-
-  if (!user.tokens.includes(token)) {
-
-    user.tokens.push(token);
-
-    user.balances.set(token, user.balances.get(token) || 0);
-
-    await user.save();
+  if (!walletAddress || !token) {
+    return res.status(400).json({ error: 'Missing walletAddress or token' });
   }
 
-  res.send({ success: true, wallet: user });
+  const allowed = new Set([
+    ...Object.keys(SEAGULLCOIN || {}),
+    ...Object.keys(SEAGULLCASH || {}),
+    'XRP' // add others if needed
+  ]);
 
+  if (!allowed.has(token)) {
+    return res.status(400).json({ error: 'Unsupported token' });
+  }
+
+  const user = await User.findOne({ publicAddress: walletAddress });
+  if (!user) return res.status(404).json({ error: 'Wallet not found' });
+
+  const updated = await User.updateOne(
+    { _id: user._id },
+    {
+      $addToSet: { tokens: token },
+      $setOnInsert: { [`balances.${token}`]: mongoose.Types.Decimal128.fromString('0') }
+    }
+  );
+
+  if (updated.modifiedCount === 0 && updated.matchedCount === 1) {
+    return res.json({ success: true, message: 'Token already added', wallet: user });
+  }
+
+  const freshUser = await User.findById(user._id);
+  res.json({ success: true, wallet: freshUser });
 });
 
 
@@ -69,7 +80,11 @@ router.post('/swap', async (req, res) => {
     return res.status(400).send({ error: 'Missing fields' });
 
   const user = await User.findOne({ publicAddress: walletAddress });
-
+    const balance = user.balances.get(fromToken);
+  if (!balance || new Decimal(balance.toString()).lessThan(amount)) {
+    return res.status(400).json({ error: 'Insufficient balance' });
+  }
+    
   if (!user)
     return res.status(400).send({ error: 'Wallet not found' });
 
@@ -153,38 +168,30 @@ router.get('/history/:walletAddress', async (req, res) => {
     Balances
 */
 router.get('/balances/:walletAddress', async (req, res) => {
-
   const user = await User.findOne({ publicAddress: req.params.walletAddress });
+  if (!user) return res.status(404).json({ error: 'Wallet not found' });
 
-  if (!user)
-    return res.status(400).send({ error: 'Wallet not found' });
-
-  const balances = Object.fromEntries(user.balances);
-
-  const l2Tokens = {};
-
-  for (const token of user.tokens) {
-
-    if (
-      Object.values(SEAGULLCOIN).some(t => t.contract === token) ||
-      Object.values(SEAGULLCASH).some(t => t.contract === token)
-    ) {
-
-      l2Tokens[token] = {
-        balance: balances[token],
-        layer2: true
-      };
-
-    }
-
+  const formattedBalances = {};
+  for (const [token, val] of user.balances.entries()) {
+    formattedBalances[token] = val ? val.toString() : '0';
   }
 
-  res.send({
-    balances,
+  // Optional: filter L2 tokens if you still want that
+  const l2Tokens = {};
+  for (const token of user.tokens) {
+    if (formattedBalances[token] !== undefined) {
+      l2Tokens[token] = {
+        balance: formattedBalances[token],
+        layer2: true // or derive from config
+      };
+    }
+  }
+
+  res.json({
+    balances: formattedBalances,
     l2Tokens,
     tokens: user.tokens
   });
-
 });
 
 module.exports = router;
