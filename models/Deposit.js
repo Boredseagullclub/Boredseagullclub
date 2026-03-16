@@ -3,75 +3,55 @@ const mongoose = require('mongoose');
 const depositSchema = new mongoose.Schema({
   userId: {
     type: mongoose.Schema.Types.ObjectId,
-    ref: "User",
+    ref: 'User',
+    required: true,
     index: true,
-    required: true
   },
-
   walletAddress: {
     type: String,
-    required: true
+    required: true,
   },
-
   chain: {
     type: String,
     required: true,
-    index: true
+    index: true,
   },
-
   token: {
     type: String,
-    required: true
+    required: true,
   },
-
   txHash: {
     type: String,
-    required: true
+    required: true,
   },
-
   amount: {
     type: mongoose.Schema.Types.Decimal128,
-    required: true
+    required: true,
   },
-
   confirmations: {
     type: Number,
-    default: 1
+    default: 1,
   },
-
   ledgerIndex: {
     type: Number,
-    index: true
+    index: true,
   },
-
   destinationTag: {
     type: String,
-    index: true
+    index: true,
   },
-
   txTimestamp: {
-    type: Date
+    type: Date,
   },
-
   status: {
     type: String,
     enum: ['DETECTED', 'CONFIRMED', 'CREDITED'],
     default: 'DETECTED',
-    index: true
-  }
-
+    index: true,
+  },
 }, { timestamps: true });
 
+// Unique constraint: one deposit per txHash + chain
 depositSchema.index({ txHash: 1, chain: 1 }, { unique: true });
-
-module.exports = mongoose.model('Deposit', depositSchema);    default: 'DETECTED'
-  }
-}, { timestamps: true });
-
-// Unique index per chain + txHash
-depositSchema.index({ txHash: 1, chain: 1 }, { unique: true });
-
-// Index for status queries
-depositSchema.index({ status: 1 });
 
 module.exports = mongoose.model('Deposit', depositSchema);
