@@ -7,34 +7,64 @@ const depositSchema = new mongoose.Schema({
     index: true,
     required: true
   },
+
   walletAddress: {
     type: String,
     required: true
   },
+
   chain: {
     type: String,
-    required: true
+    required: true,
+    index: true
   },
+
   token: {
     type: String,
     required: true
   },
+
   txHash: {
     type: String,
     required: true
   },
+
   amount: {
     type: mongoose.Schema.Types.Decimal128,
     required: true
   },
+
   confirmations: {
     type: Number,
     default: 1
   },
+
+  ledgerIndex: {
+    type: Number,
+    index: true
+  },
+
+  destinationTag: {
+    type: String,
+    index: true
+  },
+
+  txTimestamp: {
+    type: Date
+  },
+
   status: {
     type: String,
     enum: ['DETECTED', 'CONFIRMED', 'CREDITED'],
-    default: 'DETECTED'
+    default: 'DETECTED',
+    index: true
+  }
+
+}, { timestamps: true });
+
+depositSchema.index({ txHash: 1, chain: 1 }, { unique: true });
+
+module.exports = mongoose.model('Deposit', depositSchema);    default: 'DETECTED'
   }
 }, { timestamps: true });
 
