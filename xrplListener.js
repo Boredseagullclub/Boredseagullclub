@@ -1,3 +1,4 @@
+
 const { Client } = require("xrpl");
 const mongoose = require("mongoose");
 const Decimal = require("decimal.js");
@@ -7,7 +8,7 @@ const User = require("./models/User");
 const Ledger = require("./models/Ledger");
 const LRU = require("lru-cache");
 const userCache = new LRU({ max: 5000, ttl: 1000 * 60 * 60 }); // 5000 entries, expire after 1 hour
-const config = require("./config");  // adjust path if needed, e.g. ./config.js
+const config = require("./config"); // adjust path if needed
 
 let highestSeenLedger = 0;
 
@@ -21,13 +22,16 @@ async function startXrplListener() {
   const MAX_BUFFER_SIZE = 10000;
   const FLUSH_THRESHOLD = 400;
 
-  // --- Flush deposits safely ---
+  // ────────────────────────────────────────────────
+  // Flush deposits safely — now transactional
+  // ────────────────────────────────────────────────
   const flushDeposits = async () => {
     if (!depositBuffer.length) return;
 
     const depositsToInsert = depositBuffer.splice(0);
     const bulkOps = [];
 
+    // Build bulk ops for user balance updates
     for (const [userId, tokens] of userBalances) {
       const inc = {};
       for (const [token, amtStr] of Object.entries(tokens)) {
@@ -39,26 +43,41 @@ async function startXrplListener() {
     const balanceSnapshot = new Map(userBalances);
     userBalances.clear();
 
+    const session = await mongoose.startSession();
+    session.startTransaction();
+
     try {
-      await Promise.all([
-        depositsToInsert.length && Deposit.insertMany(depositsToInsert, { ordered: false }),
-        bulkOps.length && User.bulkWrite(bulkOps)
-      ]);
+      // 1. Record deposits first (audit trail / idempotency)
+      if (depositsToInsert.length) {
+        await Deposit.insertMany(depositsToInsert, { ordered: false, session });
+      }
 
-      console.log(`Flushed ${depositsToInsert.length} deposits, ledger ${highestSeenLedger}`);
+      // 2. Credit user balances
+      if (bulkOps.length) {
+        await User.bulkWrite(bulkOps, { session });
+      }
 
+      // 3. Update highest ledger index (full consistency)
       if (highestSeenLedger > 0) {
         await Ledger.findOneAndUpdate(
           { chain: "XRPL" },
           { ledger_index: highestSeenLedger, updatedAt: new Date() },
-          { upsert: true }
+          { upsert: true, session }
         );
       }
+
+      await session.commitTransaction();
+
+      console.log(`Flushed ${depositsToInsert.length} deposits, ledger ${highestSeenLedger}`);
     } catch (err) {
-      console.error("Flush failed:", err.message);
-      // Restore buffer & balances
+      await session.abortTransaction();
+      console.error("Flush transaction failed:", err.message);
+
+      // Restore buffer & balances for next attempt
       depositBuffer.unshift(...depositsToInsert);
       for (const [k, v] of balanceSnapshot) userBalances.set(k, v);
+    } finally {
+      session.endSession();
     }
   };
 
@@ -66,19 +85,21 @@ async function startXrplListener() {
 
   let isShuttingDown = false;
 
-async function gracefulShutdown() {
-  if (isShuttingDown) return;
-  isShuttingDown = true;
-  console.log("XRPL listener shutting down — flushing final buffer...");
-  await flushDeposits();
-  client.disconnect().catch(() => {});
-  process.exit(0);
-}
+  async function gracefulShutdown() {
+    if (isShuttingDown) return;
+    isShuttingDown = true;
+    console.log("XRPL listener shutting down — flushing final buffer...");
+    await flushDeposits();
+    client.disconnect().catch(() => {});
+    process.exit(0);
+  }
 
-process.on("SIGINT", gracefulShutdown);
-process.on("SIGTERM", gracefulShutdown);
+  process.on("SIGINT", gracefulShutdown);
+  process.on("SIGTERM", gracefulShutdown);
 
-  // --- Reconnection logic ---
+  // ────────────────────────────────────────────────
+  // Reconnection logic
+  // ────────────────────────────────────────────────
   let reconnectAttempts = 0;
   const MAX_RECONNECT = 20;
   const BASE_DELAY = 1000;
@@ -116,7 +137,9 @@ process.on("SIGTERM", gracefulShutdown);
 
   client.on("error", (err) => console.error("Client error:", err));
 
-  // --- Gap scanning ---
+  // ────────────────────────────────────────────────
+  // Gap scanning
+  // ────────────────────────────────────────────────
   const scanGaps = async () => {
     const last = await Ledger.findOne({ chain: "XRPL" })
       .sort({ ledger_index: -1 })
@@ -164,8 +187,9 @@ process.on("SIGTERM", gracefulShutdown);
     } while (marker);
   };
 
-  // --- Transaction handler ---
-
+  // ────────────────────────────────────────────────
+  // Transaction handler
+  // ────────────────────────────────────────────────
   client.on("transaction", async (ev) => {
     if (!ev.validated) return;
     const { transaction: tx, meta } = ev;
@@ -180,42 +204,37 @@ process.on("SIGTERM", gracefulShutdown);
     const da = meta.delivered_amount;
 
     if (da === "unavailable") {
+      console.warn(`Skipping tx ${tx.hash.slice(0,12)}... - delivered_amount unavailable`);
       return;
     }
 
     if (typeof da === "string") {
-      // XRP native
       token = "XRP";
       amount = new Decimal(da).div(1000000).toString();
-    } 
-    else if (da?.currency && da?.issuer) {
-      // Issued tokens — use config!
+    } else if (da?.currency && da?.issuer) {
       const match = Object.entries(config.TOKENS).find(([key, spec]) => {
         const xrpl = spec.networks?.XRP;
         return xrpl?.issuer === da.issuer && spec.currency === da.currency;
       });
 
       if (match) {
-        token = match[0];          // → "SeagullCoin" or "SeagullCash"
+        token = match[0];
         amount = da.value;
       }
     }
 
     if (!token || !amount || new Decimal(amount).isZero()) return;
-    
-        // ────────────────────────────────────────────────
-    // Everything below stays exactly the same
-    // ────────────────────────────────────────────────
+
     if (await Deposit.exists({ txHash: tx.hash, chain: "XRPL" })) return;
 
     const tag = String(tx.DestinationTag ?? "");
     if (!tag) return;
 
     console.log(
-  `[XRPL-DEPOSIT] ${amount} ${token} | tag:${tag} | ` +
-  `tx:${tx.hash.slice(0,12)}... | ledger:${tx.ledger_index} | ` +
-  `from:${tx.Account.slice(0,8)}...`
-);
+      `[XRPL-DEPOSIT] ${amount} ${token} | tag:${tag} | ` +
+      `tx:${tx.hash.slice(0,12)}... | ledger:${tx.ledger_index} | ` +
+      `from:${tx.Account.slice(0,8)}...`
+    );
 
     let user = userCache.get(tag);
     if (!user) {
@@ -249,17 +268,22 @@ process.on("SIGTERM", gracefulShutdown);
     }
   });
 
-  // --- Start connection ---
+  // ────────────────────────────────────────────────
+  // Start connection + gap scan
+  // ────────────────────────────────────────────────
   await connectAndSubscribe();
 
-  // Run gap scan once after successful connection
-scanGaps().catch(err => console.error("Initial gap scan failed:", err.message));
+  // Initial gap scan
+  scanGaps().catch(err => console.error("Initial gap scan failed:", err.message));
 
-// Optional: periodic scan for extra safety (every 15 min)
-setInterval(() => {
-  if (client.isConnected()) {
-    scanGaps().catch(err => console.error("Periodic gap scan failed:", err.message));
-  }
-}, 15 * 60 * 1000);
+  // Periodic gap scan
+  setInterval(() => {
+    if (client.isConnected()) {
+      scanGaps().catch(err => console.error("Periodic gap scan failed:", err.message));
+    }
+  }, 15 * 60 * 1000);
+
+  console.log(`XRPL listener started | watching ${depositAddress} | highest ledger: ${highestSeenLedger}`);
+}
 
 module.exports = startXrplListener;
