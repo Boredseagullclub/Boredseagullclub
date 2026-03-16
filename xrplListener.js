@@ -176,29 +176,37 @@ process.on("SIGTERM", gracefulShutdown);
     if (tx.ledger_index > highestSeenLedger) highestSeenLedger = tx.ledger_index;
 
     let amount = null;
-let token = null;
+    let token = null;
 
-if (meta.delivered_amount === "unavailable") {
-  // Rare partial-payment edge case — usually skip or handle specially
-  return;
-}
+    const da = meta.delivered_amount;
 
-if (typeof meta.delivered_amount === "string") {
-  // XRP → convert drops → XRP decimal string
-  token = "XRP";
-  amount = new Decimal(meta.delivered_amount).div(1000000).toString();
-} else if (meta.delivered_amount && typeof meta.delivered_amount === "object") {
-  const da = meta.delivered_amount;
-  if (da.currency === "SeagullCoin" && da.issuer === "rnqiA8vuNriU9pqD1ZDGFH8ajQBL25Wkno") {
-    token = "SeagullCoin";
-    amount = da.value;
-  } else if (da.currency === "SeagullCash" && da.issuer === "rNHeGnj4kqGSVyFzDcoyi3gsp1bdPuGeNK") {
-    token = "SeagullCash";
-    amount = da.value;
-  }
-}
+    if (da === "unavailable") {
+      return;
+    }
 
-if (!token || !amount || amount === "0") return;
+    if (typeof da === "string") {
+      // XRP native
+      token = "XRP";
+      amount = new Decimal(da).div(1000000).toString();
+    } 
+    else if (da?.currency && da?.issuer) {
+      // Issued tokens — use config!
+      const match = Object.entries(config.TOKENS).find(([key, spec]) => {
+        const xrpl = spec.networks?.XRP;
+        return xrpl?.issuer === da.issuer && spec.currency === da.currency;
+      });
+
+      if (match) {
+        token = match[0];          // → "SeagullCoin" or "SeagullCash"
+        amount = da.value;
+      }
+    }
+
+    if (!token || !amount || new Decimal(amount).isZero()) return;
+
+    // ────────────────────────────────────────────────
+    // Everything below stays exactly the same
+    // ────────────────────────────────────────────────
     if (await Deposit.exists({ txHash: tx.hash, chain: "XRPL" })) return;
 
     const tag = String(tx.DestinationTag ?? "");
