@@ -202,11 +202,7 @@ process.on("SIGTERM", gracefulShutdown);
     }
 
     if (!token || !amount || new Decimal(amount).isZero()) return;
-    console.log(
-  `[XRPL-DEPOSIT] ${amount} ${token} | tag:${tag} | ` +
-  `tx:${tx.hash.slice(0,12)}... | ledger:${tx.ledger_index} | ` +
-  `from:${tx.Account.slice(0,8)}...`
-);
+    
         // ────────────────────────────────────────────────
     // Everything below stays exactly the same
     // ────────────────────────────────────────────────
@@ -214,6 +210,12 @@ process.on("SIGTERM", gracefulShutdown);
 
     const tag = String(tx.DestinationTag ?? "");
     if (!tag) return;
+
+    console.log(
+  `[XRPL-DEPOSIT] ${amount} ${token} | tag:${tag} | ` +
+  `tx:${tx.hash.slice(0,12)}... | ledger:${tx.ledger_index} | ` +
+  `from:${tx.Account.slice(0,8)}...`
+);
 
     let user = userCache.get(tag);
     if (!user) {
@@ -249,5 +251,15 @@ process.on("SIGTERM", gracefulShutdown);
 
   // --- Start connection ---
   await connectAndSubscribe();
+
+  // Run gap scan once after successful connection
+scanGaps().catch(err => console.error("Initial gap scan failed:", err.message));
+
+// Optional: periodic scan for extra safety (every 15 min)
+setInterval(() => {
+  if (client.isConnected()) {
+    scanGaps().catch(err => console.error("Periodic gap scan failed:", err.message));
+  }
+}, 15 * 60 * 1000);
 
 module.exports = startXrplListener;
