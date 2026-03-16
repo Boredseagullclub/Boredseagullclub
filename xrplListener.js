@@ -165,7 +165,6 @@ process.on("SIGTERM", gracefulShutdown);
   };
 
   // --- Transaction handler ---
-  const userCache = new Map();
 
   client.on("transaction", async (ev) => {
     if (!ev.validated) return;
@@ -203,8 +202,12 @@ process.on("SIGTERM", gracefulShutdown);
     }
 
     if (!token || !amount || new Decimal(amount).isZero()) return;
-
-    // ────────────────────────────────────────────────
+    console.log(
+  `[XRPL-DEPOSIT] ${amount} ${token} | tag:${tag} | ` +
+  `tx:${tx.hash.slice(0,12)}... | ledger:${tx.ledger_index} | ` +
+  `from:${tx.Account.slice(0,8)}...`
+);
+        // ────────────────────────────────────────────────
     // Everything below stays exactly the same
     // ────────────────────────────────────────────────
     if (await Deposit.exists({ txHash: tx.hash, chain: "XRPL" })) return;
@@ -246,6 +249,5 @@ process.on("SIGTERM", gracefulShutdown);
 
   // --- Start connection ---
   await connectAndSubscribe();
-}
 
 module.exports = startXrplListener;
