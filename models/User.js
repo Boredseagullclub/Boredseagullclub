@@ -29,10 +29,10 @@ const userSchema = new mongoose.Schema({
 
   // Store atomic values as strings
   balances: {
-    type: Map,
-    of: String,
-    default: {}
-  },
+  type: Map,
+  of: mongoose.Schema.Types.Decimal128, // Change this
+  default: {}
+},
 
   nonce: {
     type: Number,
