@@ -1,4 +1,3 @@
-
 const { Client } = require("xrpl");
 const mongoose = require("mongoose");
 const Decimal = require("decimal.js");
@@ -11,6 +10,7 @@ const userCache = new LRU({ max: 5000, ttl: 1000 * 60 * 60 }); // 5000 entries, 
 const config = require("./config"); // adjust path if needed
 
 let highestSeenLedger = 0;
+let lastNetworkLedger = 0;
 
 async function startXrplListener() {
   const client = new Client(process.env.XRPL_WS_URL);
@@ -33,12 +33,19 @@ async function startXrplListener() {
 
     // Build bulk ops for user balance updates
     for (const [userId, tokens] of userBalances) {
-      const inc = {};
-      for (const [token, amtStr] of Object.entries(tokens)) {
-        inc[`balances.${token}`] = amtStr;
-      }
-      bulkOps.push({ updateOne: { filter: { _id: userId }, update: { $inc: inc } } });
-    }
+  const inc = {};
+  for (const [token, amtStr] of Object.entries(tokens)) {
+    // Explicitly convert the increment string to Decimal128
+    inc[`balances.${token}`] = mongoose.Types.Decimal128.fromString(amtStr);
+  }
+  bulkOps.push({ 
+    updateOne: { 
+      filter: { _id: userId }, 
+      update: { $inc: inc } 
+    } 
+  });
+}
+
 
     const balanceSnapshot = new Map(userBalances);
     userBalances.clear();
@@ -268,6 +275,22 @@ async function startXrplListener() {
     }
   });
 
+  const updateNetworkStatus = async () => {
+  try {
+    const info = await client.request({ command: "server_info" });
+    lastNetworkLedger = info.result.info.validated_ledger.seq;
+  } catch (e) { /* silent fail */ }
+};
+
+// Export a status getter
+const getSyncStatus = () => ({
+  processedLedger: highestSeenLedger,
+  networkLedger: lastNetworkLedger,
+  gap: lastNetworkLedger - highestSeenLedger,
+  isSynced: (lastNetworkLedger - highestSeenLedger) < 5,
+  bufferSize: depositBuffer.length
+});
+
   // ────────────────────────────────────────────────
   // Start connection + gap scan
   // ────────────────────────────────────────────────
@@ -286,4 +309,4 @@ async function startXrplListener() {
   console.log(`XRPL listener started | watching ${depositAddress} | highest ledger: ${highestSeenLedger}`);
 }
 
-module.exports = startXrplListener;
+module.exports = { startXrplListener, getSyncStatus };
