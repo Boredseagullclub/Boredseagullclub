@@ -306,6 +306,10 @@ const getSyncStatus = () => ({
     }
   }, 15 * 60 * 1000);
 
+  // Add this inside startXrplListener
+setInterval(updateNetworkStatus, 10000); // Check network height every 10 seconds
+
+
   console.log(`XRPL listener started | watching ${depositAddress} | highest ledger: ${highestSeenLedger}`);
 }
 
