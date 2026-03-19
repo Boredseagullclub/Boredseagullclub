@@ -5,47 +5,95 @@ const userSchema = new mongoose.Schema({
     type: String,
     required: true,
     unique: true,
-    index: true
+    index: true,
+    lowercase: true,          // ← normalize addresses (good practice)
   },
 
-  // Memo routing (XRP/XLM/HBAR/ALGO)
   depositTag: {
-  type: String,
-  unique: true,
-  sparse: true,
-  index: true
-},
+    type: String,
+    unique: true,
+    sparse: true,
+    index: true,
+  },
 
-  // EVM deposit addresses
   evmDeposits: {
-    XDC: { type: String },
-    FLR: { type: String }
+    XDC: { type: String, lowercase: true },
+    FLR: { type: String, lowercase: true },
   },
 
-  tokens: {
-    type: [String],
-    default: []
-  },
+  tokens: [String],
 
-  // Store atomic values as strings
   balances: {
-  type: Map,
-  of: mongoose.Schema.Types.Decimal128, // Change this
-  default: {}
-},
+    type: Map,
+    of: mongoose.Schema.Types.Decimal128,
+    default: () => new Map(),
+  },
 
   nonce: {
     type: Number,
-    default: 0
+    default: 0,
   },
 
-  // YYYY-MM-DD -> atomic usage
+  // ────────────────────────────────────────────────
+  // Passkeys – very well structured
+  // ────────────────────────────────────────────────
+  passkeys: [{
+    _id: false,
+
+    credentialID: {
+      type: String,
+      required: true,
+      index: true,              // ← fast lookup during auth
+    },
+
+    credentialPublicKey: {
+      type: Buffer,
+      required: true,
+    },
+
+    counter: {
+      type: Number,
+      required: true,
+      default: 0,
+    },
+
+    transports: [{
+      type: String,
+      enum: ['usb', 'nfc', 'ble', 'internal', 'hybrid'], // optional enum
+    }],
+
+    attestationType: {
+      type: String,
+      enum: ['none', 'direct', 'enterprise', 'indirect'],
+      default: 'none',
+    },
+
+    authenticatorAttachment: {
+      type: String,
+      enum: ['platform', 'cross-platform'],
+    },
+
+    createdAt: {
+      type: Date,
+      default: Date.now,
+    },
+
+    // Optional: if you allow multiple wallets per user
+    linkedChain: String,
+    linkedAddress: String,
+  }],
+
   dailyBridgeUsage: {
     type: Map,
     of: String,
-    default: {}
-  }
+    default: () => new Map(),
+  },
+
+  // Optional: last login / security fields
+  lastLogin: Date,
+  loginCount: { type: Number, default: 0 },
 
 }, { timestamps: true });
 
-module.exports = mongoose.model('User', userSchema);
+// Add compound index if you query by credentialID often
+userSchema.index({ "passkeys.credentialID": 1 });
