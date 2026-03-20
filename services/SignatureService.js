@@ -3,6 +3,7 @@ const { ethers } = require('ethers');
 const rippleKeypairs = require('ripple-keypairs');
 const StellarSdk = require('stellar-sdk');
 const { PublicKey } = require('@hashgraph/sdk');
+const logger = require('../utils/logger'); // assuming you have pino or similar
 
 /**
  * Build a deterministic message for swap signing
@@ -20,65 +21,98 @@ timestamp:${timestamp}`;
 
 /**
  * Verify a swap signature across multiple chains
+ * @param {Object} params
+ * @param {string} params.walletAddress - User's on-chain address (r..., 0x..., G..., etc.)
+ * @param {string} [params.publicKey] - Hex public key — REQUIRED for XRPL
+ * @param {string} params.signature - Signature provided by user
+ * @returns {boolean}
  */
-async function verifySwapSignature({ 
-  walletAddress, 
-  publicKey, // Required for XRPL verification
-  signature, 
-  fromToken, 
-  toToken, 
-  amount, 
-  nonce, 
-  timestamp, 
-  chain 
+async function verifySwapSignature({
+  walletAddress,
+  publicKey,           // ← must be passed for XRPL
+  signature,
+  fromToken,
+  toToken,
+  amount,
+  nonce,
+  timestamp,
+  chain
 }) {
+  if (!signature || !chain) {
+    return false;
+  }
+
   const message = buildSwapMessage({ walletAddress, fromToken, toToken, amount, chain, nonce, timestamp });
 
-  switch (chain.toUpperCase()) {
+  const upperChain = chain.toUpperCase();
+
+  switch (upperChain) {
     case 'FLR':
-    case 'XDC':
+    case 'XDC': {
       try {
-        // V6: verifyMessage is a top-level export
         const recovered = ethers.verifyMessage(message, signature);
         return recovered.toLowerCase() === walletAddress.toLowerCase();
       } catch {
         return false;
       }
+    }
 
-    case 'XRPL':
-      try {
-        // 1. Convert message to Hex for the ripple library
-        const messageHex = Buffer.from(message).toString('hex');
-        
-        // 2. Verify signature against the HEX Public Key (not the r-address)
-        const isValid = rippleKeypairs.verify(messageHex, signature, publicKey);
-        if (!isValid) return false;
-
-        // 3. Confirm the Public Key belongs to the walletAddress in our DB
-        const derivedAddress = rippleKeypairs.deriveAddress(publicKey);
-        return derivedAddress === walletAddress;
-      } catch (err) {
+    case 'XRPL': {
+      if (!publicKey) {
+        logger.warn({ event: 'xrpl_sig_verify_missing_pubkey', walletAddress });
         return false;
       }
 
-    case 'XLM':
+      try {
+        const messageHex = Buffer.from(message).toString('hex');
+
+        // ripple-keypairs expects hex public key (33 bytes → 66 hex chars)
+        const isValid = rippleKeypairs.verify(messageHex, signature, publicKey);
+        if (!isValid) return false;
+
+        // Extra safety: make sure this pubkey actually belongs to the claimed address
+        const derivedAddress = rippleKeypairs.deriveAddress(publicKey);
+        if (derivedAddress !== walletAddress) {
+          logger.warn({
+            event: 'xrpl_pubkey_address_mismatch',
+            claimed: walletAddress,
+            derived: derivedAddress
+          });
+          return false;
+        }
+
+        return true;
+      } catch (err) {
+        logger.debug({
+          event: 'xrpl_sig_verify_error',
+          error: err.message,
+          walletAddress
+        });
+        return false;
+      }
+    }
+
+    case 'XLM': {
       try {
         const keypair = StellarSdk.Keypair.fromPublicKey(walletAddress);
         return keypair.verify(Buffer.from(message), Buffer.from(signature, 'hex'));
       } catch {
         return false;
       }
+    }
 
-    case 'HBAR':
+    case 'HBAR': {
       try {
-        const pubKey = PublicKey.fromString(walletAddress);
-        return pubKey.verify(Buffer.from(message), signature);
+        const pubKey = PublicKey.fromString(walletAddress); // Hedera uses string format
+        return pubKey.verify(Buffer.from(message), Buffer.from(signature, 'hex')); // note: Hedera sigs are usually DER or raw
       } catch {
         return false;
       }
+    }
 
     default:
-      throw new Error(`Unsupported chain: ${chain}`);
+      logger.warn({ event: 'unsupported_chain_for_sig_verify', chain: upperChain });
+      return false;
   }
 }
 
