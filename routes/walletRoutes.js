@@ -2,83 +2,100 @@ const express = require('express');
 const router = express.Router();
 const mongoose = require('mongoose');
 const Decimal = require('decimal.js');
+const { authenticateJWT } = require('../middleware/auth'); // assuming you have this from earlier
 
 const User = require('../models/User');
 const Ledger = require('../models/Ledger');
-const Withdrawal = require('../models/Withdrawal'); // You'll create this model next
+const Withdrawal = require('../models/Withdrawal');
 const { checkAndLockQuota } = require('../services/quotaGuard');
-const WalletService = require('../services/walletService');
+const { executeOnChainPayout } = require('../services/payoutEngine'); // your payout file
 
 /* --- Create Wallet --- */
 router.post('/wallet', async (req, res) => {
   const { publicAddress } = req.body;
-  if (!publicAddress) return res.status(400).send({ error: 'publicAddress required' });
+  if (!publicAddress) return res.status(400).json({ error: 'publicAddress required' });
 
   let user = await User.findOne({ publicAddress });
   if (!user) user = await User.create({ publicAddress });
 
-  res.send({ success: true, wallet: user });
+  res.json({ success: true, wallet: user });
 });
 
 /* --- Withdrawal (With Daily Limits) --- */
-router.post('/withdraw', async (req, res) => {
-  const { walletAddress, token, amount, destination, chain } = req.body;
+router.post('/withdraw', authenticateJWT, async (req, res) => {
+  const { token, amount, destination, chain } = req.body;
+
+  // Basic input validation
+  if (!token || !amount || !destination || !chain) {
+    return res.status(400).json({ error: 'Missing required fields' });
+  }
+
   const session = await mongoose.startSession();
-
   try {
-    session.startTransaction();
+    await session.withTransaction(async () => {
+      // 1. Load user
+      const user = await User.findById(req.user.userId).session(session);
+      if (!user) throw new Error('User not found');
 
-    // 1. Check User & Balance
-    const user = await User.findOne({ publicAddress: walletAddress }).session(session);
-    if (!user) throw new Error('Wallet not found');
+      // 2. Balance check
+      const bal = user.balances.get(token);
+      if (!bal || new Decimal(bal.toString()).lt(amount)) {
+        throw new Error('Insufficient balance');
+      }
 
-    const bal = user.balances.get(token);
-    if (!bal || new Decimal(bal.toString()).lt(amount)) {
-      throw new Error('Insufficient balance');
-    }
+      // 3. Treasury quota check (atomic)
+      await checkAndLockQuota(token, amount, session);
 
-    // 2. 🛡️ QUOTA CHECK (25M SeagullCash / 100k SeagullCoin)
-    // If this fails, the whole transaction rolls back.
-    await checkAndLockQuota(token, amount, session);
+      // 4. Subtract balance
+      const newBal = new Decimal(bal.toString()).minus(amount).toString();
+      user.balances.set(token, mongoose.Types.Decimal128.fromString(newBal));
+      await user.save({ session });
 
-    // 3. Subtract Balance
-    const newBal = new Decimal(bal.toString()).minus(amount).toString();
-    user.balances.set(token, mongoose.Types.Decimal128.fromString(newBal));
-    await user.save({ session });
+      // 5. Create pending withdrawal
+      const withdrawal = await Withdrawal.create([{
+        userId: user._id,
+        token,
+        amount: mongoose.Types.Decimal128.fromString(amount.toString()),
+        toAddress: destination,
+        chain,
+        status: 'PENDING',
+        requestedAt: new Date()
+      }], { session });
 
-    // 4. Log the intent
-    const withdrawal = await Withdrawal.create([{
-      userId: user._id,
-      token,
-      amount: mongoose.Types.Decimal128.fromString(amount.toString()),
-      toAddress: destination,
-      chain,
-      status: 'PROCESSING'
-    }], { session });
+      await session.commitTransaction();
 
-    await session.commitTransaction();
-    session.endSession();
+      // 6. Trigger payout asynchronously
+      executeOnChainPayout(withdrawal[0]._id)
+        .then(txHash => {
+          Withdrawal.updateOne(
+            { _id: withdrawal[0]._id },
+            { status: 'COMPLETED', txHash }
+          ).exec();
+        })
+        .catch(err => {
+          Withdrawal.updateOne(
+            { _id: withdrawal[0]._id },
+            { status: 'FAILED', error: err.message }
+          ).exec();
+          logger.error({ event: 'payout_failed', withdrawalId: withdrawal[0]._id, error: err.message });
+        });
 
-    // 5. 🚀 Trigger actual Blockchain Send (Asynchronous)
-    WalletService.send(chain, destination, amount)
-      .then(txHash => {
-        Withdrawal.updateOne({ _id: withdrawal[0]._id }, { status: 'COMPLETED', txHash }).exec();
-      })
-      .catch(err => {
-        Withdrawal.updateOne({ _id: withdrawal[0]._id }, { status: 'FAILED', error: err.message }).exec();
+      res.json({
+        success: true,
+        message: 'Withdrawal processing started',
+        withdrawalId: withdrawal[0]._id
       });
-
-    res.send({ success: true, message: 'Withdrawal processing', id: withdrawal[0]._id });
-
+    });
   } catch (err) {
     await session.abortTransaction();
+    res.status(400).json({ error: err.message });
+  } finally {
     session.endSession();
-    res.status(400).send({ error: err.message });
   }
 });
 
 /* --- Balances --- */
-router.get('/balances/:walletAddress', async (req, res) => {
+router.get('/balances/:walletAddress', authenticateJWT, async (req, res) => {
   const user = await User.findOne({ publicAddress: req.params.walletAddress });
   if (!user) return res.status(404).json({ error: 'Wallet not found' });
 
@@ -91,12 +108,16 @@ router.get('/balances/:walletAddress', async (req, res) => {
 });
 
 /* --- History --- */
-router.get('/history/:walletAddress', async (req, res) => {
+router.get('/history/:walletAddress', authenticateJWT, async (req, res) => {
   const user = await User.findOne({ publicAddress: req.params.walletAddress });
-  if (!user) return res.status(400).send({ error: 'Wallet not found' });
+  if (!user) return res.status(404).json({ error: 'Wallet not found' });
 
-  const history = await Ledger.find({ userId: user._id }).sort({ createdAt: -1 }).limit(50);
-  res.send(history);
+  const history = await Ledger
+    .find({ userId: user._id })
+    .sort({ createdAt: -1 })
+    .limit(50);
+
+  res.json(history);
 });
 
 module.exports = router;
