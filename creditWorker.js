@@ -6,6 +6,7 @@ const logger = require('../utils/logger');
 /**
  * 🛠️ SELF-HEALING: Unlock stuck deposits
  * Periodically resets deposits that have been "processing" for too long.
+ * Broadened to catch both 'DETECTED' and 'CONFIRMED' states.
  */
 async function unlockStuckDeposits() {
   const FIVE_MINUTES_AGO = new Date(Date.now() - 5 * 60 * 1000);
@@ -13,7 +14,7 @@ async function unlockStuckDeposits() {
   try {
     const result = await Deposit.updateMany(
       { 
-        status: 'DETECTED', 
+        status: { $in: ['DETECTED', 'CONFIRMED'] }, 
         processing: true, 
         processingStartedAt: { $lt: FIVE_MINUTES_AGO } 
       },
@@ -43,18 +44,23 @@ async function unlockStuckDeposits() {
 async function creditDeposits() {
   logger.info({ module: 'Creditor', event: 'start' });
 
-  // Run cleanup every 5 minutes
+  // Run cleanup every 5 minutes to release locks from crashed instances
   setInterval(unlockStuckDeposits, 5 * 60 * 1000);
 
   while (true) {
-    // 1. Find a candidate without locking yet
+    // 1. Find a candidate based on chain-specific finality requirements
+    // EVM: Needs external confirmation service to move DETECTED -> CONFIRMED
+    // Non-EVM: Safe to process immediately upon detection
     const deposit = await Deposit.findOne({
-      status: 'DETECTED',
+      $or: [
+        { status: 'CONFIRMED', chain: { $in: ['XDC', 'FLR'] } }, 
+        { status: 'DETECTED', chain: { $in: ['XRP', 'XLM', 'HBAR'] } }
+      ],
       processing: { $ne: true }
     });
 
     if (!deposit) {
-      // 💡 Backoff: No deposits to process, wait longer to save CPU/DB hits
+      // 💡 Backoff: No deposits to process, wait to save CPU/DB hits
       await new Promise(r => setTimeout(r, 2000));
       continue;
     }
@@ -63,11 +69,11 @@ async function creditDeposits() {
     
     try {
       await session.withTransaction(async () => {
-        // 2. Atomic Lock: Ensure no other worker instance grabs this specific deposit
+        // 2. Atomic Lock: Mirror the find query for safety
         const lockedDeposit = await Deposit.findOneAndUpdate(
           { 
             _id: deposit._id, 
-            status: 'DETECTED', 
+            status: deposit.status, 
             processing: { $ne: true } 
           },
           { 
@@ -82,7 +88,7 @@ async function creditDeposits() {
         if (!lockedDeposit) return;
 
         // 3. Atomic Credit
-        // MongoDB handles Decimal128 math natively with $inc
+        // Increments balance and sets a heartbeat timestamp
         const userUpdate = await User.updateOne(
           { _id: lockedDeposit.userId },
           { 
@@ -116,7 +122,8 @@ async function creditDeposits() {
         userId: deposit.userId,
         amount: deposit.amount.toString(),
         token: deposit.token,
-        txHash: deposit.txHash
+        txHash: deposit.txHash,
+        chain: deposit.chain
       });
 
     } catch (err) {
@@ -127,14 +134,14 @@ async function creditDeposits() {
         error: err.message
       });
 
-      // Manual reset on catch so it can be retried immediately if it was just a transient DB error
+      // Reset the lock on failure so it can be retried or caught by cleanup
       try {
         await Deposit.updateOne(
           { _id: deposit._id },
           { $set: { processing: false, errorMessage: err.message } }
         );
       } catch (resetErr) {
-        // Silent catch: the setInterval cleanup will eventually handle this if the DB is down
+        // Silent catch: setInterval cleanup handles this if DB connection is toggling
       }
     } finally {
       session.endSession();
