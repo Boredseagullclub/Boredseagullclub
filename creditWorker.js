@@ -4,12 +4,47 @@ const User = require('../models/User');
 const logger = require('../utils/logger');
 
 /**
+ * 🛠️ SELF-HEALING: Unlock stuck deposits
+ * Periodically resets deposits that have been "processing" for too long.
+ */
+async function unlockStuckDeposits() {
+  const FIVE_MINUTES_AGO = new Date(Date.now() - 5 * 60 * 1000);
+  
+  try {
+    const result = await Deposit.updateMany(
+      { 
+        status: 'DETECTED', 
+        processing: true, 
+        processingStartedAt: { $lt: FIVE_MINUTES_AGO } 
+      },
+      { 
+        $set: { processing: false },
+        $inc: { retryCount: 1 }
+      }
+    );
+    
+    if (result.modifiedCount > 0) {
+      logger.warn({
+        module: 'Creditor',
+        event: 'cleanup_stuck_locks',
+        count: result.modifiedCount
+      });
+    }
+  } catch (err) {
+    logger.error({ module: 'Creditor', event: 'cleanup_error', error: err.message });
+  }
+}
+
+/**
  * 🔥 THE REFINED CREDITOR
  * Uses MongoDB ACID Transactions to ensure balances and deposit 
  * statuses are updated together or not at all.
  */
 async function creditDeposits() {
   logger.info({ module: 'Creditor', event: 'start' });
+
+  // Run cleanup every 5 minutes
+  setInterval(unlockStuckDeposits, 5 * 60 * 1000);
 
   while (true) {
     // 1. Find a candidate without locking yet
@@ -19,6 +54,7 @@ async function creditDeposits() {
     });
 
     if (!deposit) {
+      // 💡 Backoff: No deposits to process, wait longer to save CPU/DB hits
       await new Promise(r => setTimeout(r, 2000));
       continue;
     }
@@ -43,14 +79,10 @@ async function creditDeposits() {
           { session, new: true }
         );
 
-        if (!lockedDeposit) {
-          // Another worker thread/process beat us to it
-          return;
-        }
+        if (!lockedDeposit) return;
 
         // 3. Atomic Credit
-        // We pass lockedDeposit.amount (Decimal128) directly to $inc.
-        // MongoDB handles Decimal128 math natively, preserving all 18+ decimals.
+        // MongoDB handles Decimal128 math natively with $inc
         const userUpdate = await User.updateOne(
           { _id: lockedDeposit.userId },
           { 
@@ -95,14 +127,14 @@ async function creditDeposits() {
         error: err.message
       });
 
-      // Reset the processing flag so the background worker can try again
+      // Manual reset on catch so it can be retried immediately if it was just a transient DB error
       try {
         await Deposit.updateOne(
           { _id: deposit._id },
           { $set: { processing: false, errorMessage: err.message } }
         );
       } catch (resetErr) {
-        logger.error('Failed to reset processing flag:', resetErr.message);
+        // Silent catch: the setInterval cleanup will eventually handle this if the DB is down
       }
     } finally {
       session.endSession();
