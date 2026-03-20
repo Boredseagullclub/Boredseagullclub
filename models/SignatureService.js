@@ -38,11 +38,13 @@ async function verifySwapSignature({ walletAddress, fromToken, toToken, amount, 
       }
 
     case 'XRPL':
-      try {
-        return rippleKeypairs.verify(message, signature, walletAddress);
-      } catch {
-        return false;
-      }
+  try {
+    // Note: walletAddress here must be the HEX Public Key, 
+    // NOT the 'r...' address for the ripple-keypairs library.
+    return rippleKeypairs.verify(Buffer.from(message).toString('hex'), signature, walletAddress);
+  } catch {
+    return false;
+  }
 
     case 'XLM':
       try {
