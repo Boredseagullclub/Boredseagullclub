@@ -1,30 +1,34 @@
+// services/reconciler.js (or auditService.js)
+
 const User = require('../models/User');
 const { Client: XrplClient } = require('xrpl');
 const StellarSdk = require('stellar-sdk');
-const { Client: HederaClient, AccountBalanceQuery } = require('@hashgraph/sdk');
+const { Client: HederaClient, AccountBalanceQuery, HbarUnit } = require('@hashgraph/sdk');
 const { ethers } = require('ethers');
 const Decimal = require('decimal.js');
+const axios = require('axios');
 const logger = require('../utils/logger');
 const config = require('../config'); // your token/chain config
 
 /**
  * Full solvency audit: DB liabilities vs verified on-chain assets
- * Returns report + throws on critical issues
+ * Returns report + throws on critical failures
  */
 async function performFullAudit() {
-  logger.info({ module: 'Audit', event: 'reconciliation_started' });
+  logger.info({ module: 'Reconciler', event: 'audit_started' });
 
   const report = {
     timestamp: new Date().toISOString(),
     liabilities: {},
     assets: {},
     discrepancies: [],
-    status: 'OK',
+    overallStatus: 'SOLVENT',
+    criticalDeficits: [],
   };
 
   try {
-    // 1. Liabilities from DB (all tokens)
-    const dbLiabilities = await User.aggregate([
+    // 1. Aggregate liabilities from DB (all tokens)
+    const dbAgg = await User.aggregate([
       { $project: { balances: { $objectToArray: '$balances' } } },
       { $unwind: '$balances' },
       {
@@ -35,111 +39,226 @@ async function performFullAudit() {
       },
     ]);
 
-    report.liabilities = dbLiabilities.reduce((acc, { _id, totalOwed }) => {
-      acc[_id] = new Decimal(totalOwed);
+    report.liabilities = dbAgg.reduce((acc, { _id, totalOwed }) => {
+      acc[_id] = new Decimal(totalOwed || 0);
       return acc;
     }, {});
 
-    // 2. Fetch verified on-chain assets (hot + cold wallets if applicable)
-    report.assets = await getVerifiedOnChainAssets();
+    // 2. Fetch verified on-chain balances
+    report.assets = await getVerifiedOnChainBalances();
 
-    // 3. Compare
+    // 3. Compare & build report
     for (const [token, owed] of Object.entries(report.liabilities)) {
       const held = report.assets[token] || new Decimal(0);
       const diff = held.minus(owed);
 
-      report.discrepancies.push({
+      const entry = {
         token,
         owed: owed.toString(),
         held: held.toString(),
         difference: diff.toString(),
         status: diff.gte(0) ? 'SOLVENT' : 'DEFICIT',
-      });
+      };
+
+      report.discrepancies.push(entry);
 
       if (diff.lt(0)) {
-        report.status = 'DEFICIT';
+        report.overallStatus = 'DEFICIT';
+        const missing = diff.abs();
+        report.criticalDeficits.push({ token, missing: missing.toString() });
+
         logger.error({
-          module: 'Audit',
-          event: 'CRITICAL_DEFICIT',
+          module: 'Reconciler',
+          event: 'DEFICIT_DETECTED',
           token,
           owed: owed.toString(),
           held: held.toString(),
-          missing: diff.abs().toString(),
+          missing: missing.toString(),
         });
-        // TODO: trigger alert (Slack/PagerDuty)
+
+        // Real alert
+        await sendDeficitAlert({ token, missing: missing.toString(), owed: owed.toString(), held: held.toString() });
       }
     }
 
+    logger.info({
+      module: 'Reconciler',
+      event: 'audit_completed',
+      status: report.overallStatus,
+      deficitCount: report.criticalDeficits.length,
+    });
+
     return report;
   } catch (err) {
-    logger.error({ module: 'Audit', event: 'audit_failed', error: err.message, stack: err.stack });
+    logger.error({
+      module: 'Reconciler',
+      event: 'audit_failed',
+      error: err.message,
+      stack: err.stack,
+    });
     throw err;
   }
 }
 
 /**
- * Fetch balances from all relevant deposit/hot/cold addresses with validation
+ * Fetch balances from deposit/hot addresses across all supported chains
+ * Only counts trusted tokens from config
  */
-async function getVerifiedOnChainAssets() {
-  const assets = {};
+async function getVerifiedOnChainBalances() {
+  const balances = {};
 
   // ─── XRPL ───────────────────────────────────────────────────────────────
-  const xrplClient = new XrplClient(process.env.XRPL_WS_URL);
+  const xrpl = new XrplClient(process.env.XRPL_WS_URL);
   try {
-    await xrplClient.connect();
-    const account = process.env.XRPL_DEPOSIT_ADDRESS;
-    const info = await xrplClient.request({
-      command: 'account_lines',
-      account,
-      ledger_index: 'validated',
-    });
+    await xrpl.connect();
+    const addr = process.env.XRPL_DEPOSIT_ADDRESS;
 
     // Native XRP
-    const accountInfo = await xrplClient.request({
-      command: 'account_info',
-      account,
-    });
-    assets.XRP = new Decimal(accountInfo.result.account_data.Balance).div(1_000_000);
+    const info = await xrpl.request({ command: 'account_info', account: addr });
+    balances.XRP = new Decimal(info.result.account_data.Balance).div(1_000_000);
 
-    // Issued tokens (only trusted issuers)
-    for (const line of info.result.lines) {
-      const token = Object.keys(config.TOKENS).find(
-        t => config.TOKENS[t].networks?.XRP?.issuer === line.account
+    // Issued tokens
+    const lines = await xrpl.request({
+      command: 'account_lines',
+      account: addr,
+      ledger_index: 'validated',
+    });
+    for (const line of lines.result.lines) {
+      const tokenEntry = Object.entries(config.TOKENS).find(
+        ([_, spec]) => spec.networks?.XRP?.issuer === line.account
       );
-      if (token) {
-        assets[token] = new Decimal(line.balance);
+      if (tokenEntry) {
+        const [token] = tokenEntry;
+        balances[token] = new Decimal(line.balance);
       }
     }
+  } catch (err) {
+    logger.error({ module: 'Reconciler', chain: 'XRPL', error: err.message });
   } finally {
-    xrplClient.disconnect();
+    xrpl.disconnect();
   }
 
   // ─── Stellar ────────────────────────────────────────────────────────────
-  const stellarServer = new StellarSdk.Server(process.env.STELLAR_HORIZON_URL);
-  const stellarAcct = await stellarServer.loadAccount(process.env.STELLAR_DEPOSIT_ADDRESS);
-  for (const bal of stellarAcct.balances) {
-    if (bal.asset_type === 'native') {
-      assets.XLM = new Decimal(bal.balance);
-    } else {
-      const token = Object.keys(config.TOKENS).find(
-        t => config.TOKENS[t].networks?.XLM?.issuer === bal.asset_issuer &&
-             config.TOKENS[t].networks?.XLM?.code === bal.asset_code
-      );
-      if (token) {
-        assets[token] = new Decimal(bal.balance);
+  try {
+    const stellar = new StellarSdk.Server(process.env.STELLAR_HORIZON_URL);
+    const acct = await stellar.loadAccount(process.env.STELLAR_DEPOSIT_ADDRESS);
+
+    for (const bal of acct.balances) {
+      if (bal.asset_type === 'native') {
+        balances.XLM = new Decimal(bal.balance);
+      } else {
+        const tokenEntry = Object.entries(config.TOKENS).find(
+          ([_, spec]) =>
+            spec.networks?.XLM?.issuer === bal.asset_issuer &&
+            spec.networks?.XLM?.code === bal.asset_code
+        );
+        if (tokenEntry) {
+          const [token] = tokenEntry;
+          balances[token] = new Decimal(bal.balance);
+        }
       }
+    }
+  } catch (err) {
+    logger.error({ module: 'Reconciler', chain: 'XLM', error: err.message });
+  }
+
+  // ─── EVM (XDC + FLR) ────────────────────────────────────────────────────
+  for (const chain of ['XDC', 'FLR']) {
+    try {
+      const rpcUrl = process.env[`${chain}_RPC_URL`];
+      if (!rpcUrl) continue;
+
+      const provider = new ethers.JsonRpcProvider(rpcUrl);
+      const depositAddr = process.env[`${chain}_DEPOSIT_ADDRESS`]?.toLowerCase();
+      if (!depositAddr) continue;
+
+      // Native token
+      const nativeBal = await provider.getBalance(depositAddr);
+      const nativeSymbol = config.CHAINS?.[chain]?.nativeSymbol || chain;
+      const decimals = config.CHAINS?.[chain]?.decimals || 18;
+      balances[nativeSymbol] = new Decimal(nativeBal.toString()).div(
+        new Decimal(10).pow(decimals)
+      );
+
+      // ERC-20 tokens
+      const tokenEntries = Object.entries(config.TOKENS).filter(
+        ([_, spec]) => spec.networks?.[chain]?.contract
+      );
+
+      for (const [token, spec] of tokenEntries) {
+        const contractAddr = spec.networks[chain].contract.toLowerCase();
+        const abi = ['function balanceOf(address) view returns (uint256)'];
+        const contract = new ethers.Contract(contractAddr, abi, provider);
+        const bal = await contract.balanceOf(depositAddr);
+        const tokenDecimals = spec.networks[chain].decimals || 18;
+        balances[token] = new Decimal(bal.toString()).div(
+          new Decimal(10).pow(tokenDecimals)
+        );
+      }
+    } catch (err) {
+      logger.error({ module: 'Reconciler', chain, error: err.message });
     }
   }
 
-  // ─── Hedera (example - add EVM similarly) ───────────────────────────────
-  // const hederaClient = HederaClient.forMainnet().setOperator(...);
-  // const balance = await new AccountBalanceQuery()
-  //   .setAccountId(process.env.HEDERA_DEPOSIT_ACCOUNT)
-  //   .execute(hederaClient);
-  // assets.HBAR = new Decimal(balance.hbars.toTinybars()).div(1e8);
-  // ... HTS tokens ...
+  // ─── Hedera ─────────────────────────────────────────────────────────────
+  try {
+    const operatorId = process.env.HEDERA_OPERATOR_ID;
+    const operatorKey = process.env.HEDERA_OPERATOR_KEY;
+    if (!operatorId || !operatorKey) throw new Error('Hedera credentials missing');
 
-  return assets;
+    const hederaClient = HederaClient.forMainnet().setOperator(operatorId, operatorKey);
+
+    const balance = await new AccountBalanceQuery()
+      .setAccountId(process.env.HEDERA_DEPOSIT_ACCOUNT)
+      .execute(hederaClient);
+
+    // Native HBAR
+    balances.HBAR = new Decimal(balance.hbars.to(HbarUnit.Tinybar).toString()).div(1e8);
+
+    // HTS tokens
+    const tokenEntries = Object.entries(config.TOKENS).filter(
+      ([_, spec]) => spec.networks?.HBAR?.issuer
+    );
+
+    for (const [token, spec] of tokenEntries) {
+      const tokenId = spec.networks.HBAR.issuer;
+      const tokenBal = balance.tokens.get(tokenId);
+      if (tokenBal) {
+        const decimals = spec.networks.HBAR.decimals || 8;
+        balances[token] = new Decimal(tokenBal.toString()).div(
+          new Decimal(10).pow(decimals)
+        );
+      }
+    }
+  } catch (err) {
+    logger.error({ module: 'Reconciler', chain: 'HBAR', error: err.message });
+  }
+
+  return balances;
+}
+
+/**
+ * Send real-time alert on deficit (Slack example)
+ */
+async function sendDeficitAlert({ token, missing, owed, held }) {
+  const webhook = process.env.SLACK_WEBHOOK_URL;
+  if (!webhook) return;
+
+  const message = {
+    text: `🚨 CRITICAL SOLVENCY DEFICIT DETECTED\n` +
+          `Token: ${token}\n` +
+          `Missing: ${missing}\n` +
+          `Owed: ${owed}\n` +
+          `Held: ${held}\n` +
+          `Audit time: ${new Date().toISOString()}`,
+  };
+
+  try {
+    await axios.post(webhook, message);
+    logger.info({ module: 'Reconciler', event: 'deficit_alert_sent', token });
+  } catch (err) {
+    logger.error({ module: 'Reconciler', event: 'alert_failed', error: err.message });
+  }
 }
 
 module.exports = { performFullAudit };
