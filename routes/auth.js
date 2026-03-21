@@ -1,4 +1,3 @@
-// routes/auth.js
 const express = require('express');
 const router = express.Router();
 const {
@@ -10,8 +9,10 @@ const {
 
 const User = require('../models/User');
 const jwt = require('jsonwebtoken');
+const { verifySwapSignature } = require('../services/SignatureService');
+const { passkeySuccessCounter } = require('../app'); // Import counter from app.js (or use a shared metrics file)
 
-const RP_ID = process.env.RP_ID || 'localhost'; // must match your frontend domain
+const RP_ID = process.env.RP_ID || 'localhost';
 const RP_NAME = 'Seagull Exchange';
 const ORIGIN = process.env.FRONTEND_URL || 'http://localhost:3000';
 
@@ -24,10 +25,30 @@ function signToken(user) {
   );
 }
 
-// 1. Registration Start (called when user wants to add a passkey)
+// 1. Registration Start – now requires wallet signature proof
 router.post('/passkey/register/start', async (req, res) => {
-  const { publicAddress } = req.body;
-  if (!publicAddress) return res.status(400).json({ error: 'publicAddress required' });
+  const { publicAddress, signature, nonce, timestamp, chain } = req.body;
+
+  // Require proof of wallet ownership
+  if (!signature || !nonce || !timestamp || !chain) {
+    return res.status(400).json({ error: 'Wallet signature required to register passkey' });
+  }
+
+  const isValid = await verifySwapSignature({
+    walletAddress: publicAddress,
+    publicKey: req.body.publicKey, // Required for XRPL/HBAR, optional for others
+    signature,
+    fromToken: 'any', // dummy
+    toToken: 'any',
+    amount: '0',
+    nonce,
+    timestamp,
+    chain
+  });
+
+  if (!isValid) {
+    return res.status(401).json({ error: 'Invalid wallet signature – ownership not verified' });
+  }
 
   let user = await User.findOne({ publicAddress });
   if (!user) {
@@ -48,14 +69,13 @@ router.post('/passkey/register/start', async (req, res) => {
     })),
   });
 
-  // Store challenge temporarily (in production use Redis with TTL)
   user.pendingWebauthnChallenge = options.challenge;
   await user.save();
 
   res.json(options);
 });
 
-// 2. Registration Finish
+// 2. Registration Finish (unchanged – signature already verified in /start)
 router.post('/passkey/register/finish', async (req, res) => {
   const { publicAddress, response } = req.body;
   const user = await User.findOne({ publicAddress });
@@ -96,7 +116,7 @@ router.post('/passkey/register/finish', async (req, res) => {
   }
 });
 
-// 3. Login Start (challenge for existing passkey)
+// 3. Login Start (unchanged)
 router.post('/passkey/login/start', async (req, res) => {
   const { publicAddress } = req.body;
   const user = await User.findOne({ publicAddress });
@@ -119,7 +139,7 @@ router.post('/passkey/login/start', async (req, res) => {
   res.json(options);
 });
 
-// 4. Login Finish
+// 4. Login Finish – now increments success counter
 router.post('/passkey/login/finish', async (req, res) => {
   const { publicAddress, response } = req.body;
   const user = await User.findOne({ publicAddress });
@@ -148,12 +168,16 @@ router.post('/passkey/login/finish', async (req, res) => {
       return res.status(400).json({ error: 'Verification failed' });
     }
 
-    // Update counter
+    // Update counter & login stats
     credential.counter = verification.authenticationInfo.newCounter;
     user.lastLogin = new Date();
     user.loginCount += 1;
     user.pendingWebauthnChallenge = undefined;
+
     await user.save();
+
+    // SUCCESS: Increment Prometheus counter
+    passkeySuccessCounter.inc();
 
     const token = signToken(user);
     res.json({ success: true, token });
