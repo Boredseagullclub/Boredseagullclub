@@ -14,7 +14,7 @@ const { checkAndLockQuota } = require('../services/quotaGuard');
 const { executeOnChainPayout } = require('../services/payoutEngine');
 
 // ────────────────────────────────────────────────
-// Rate limiting (global + per-user + withdrawal-specific)
+// Rate limiting (global + per-user + strict withdrawal)
 // ────────────────────────────────────────────────
 const globalWithdrawLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
@@ -34,10 +34,10 @@ const perUserWithdrawLimiter = rateLimit({
   legacyHeaders: false,
 });
 
-// Dedicated limiter just for the /withdraw endpoint
+// Strict limiter: only 5 withdrawals per hour per user/IP
 const strictWithdrawLimiter = rateLimit({
   windowMs: 60 * 60 * 1000, // 1 hour
-  max: 5,                   // stricter: only 5 withdrawals per hour
+  max: 5,
   keyGenerator: (req) => req.user?.userId || req.ip,
   message: { error: 'Withdrawal rate limit reached — wait 1 hour' },
   standardHeaders: true,
@@ -66,11 +66,11 @@ router.post('/wallet', async (req, res) => {
 // ────────────────────────────────────────────────
 router.post(
   '/withdraw',
-  authenticateJWT,                    // Must be logged in
-  globalWithdrawLimiter,              // IP-based global
-  perUserWithdrawLimiter,             // Per-user hourly
-  strictWithdrawLimiter,              // Strictest: 5/hour
-  validateAddress,                    // Address validation
+  authenticateJWT,                    // 1. Must be logged in
+  globalWithdrawLimiter,              // 2. IP-based global
+  perUserWithdrawLimiter,             // 3. Per-user hourly
+  strictWithdrawLimiter,              // 4. Strictest: 5/hour
+  validateAddress,                    // 5. Address validation
   async (req, res) => {
     const { token, amount, destination, chain } = req.body;
 
