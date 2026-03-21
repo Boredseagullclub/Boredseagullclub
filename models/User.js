@@ -11,14 +11,12 @@ const userSchema = new mongoose.Schema({
     trim: true,
   },
 
-  // Per-chain memo/tag (XRP number, XLM text, etc.)
   depositTags: {
     type: Map,
     of: String,
     default: () => new Map(),
   },
 
-  // Per-chain EVM deposit addresses
   evmDeposits: {
     type: Map,
     of: { type: String, lowercase: true, trim: true },
@@ -52,6 +50,14 @@ const userSchema = new mongoose.Schema({
     linkedAddress: String,
   }],
 
+  // ─── NEW: Temporary WebAuthn challenge storage (with auto-expiry) ────────
+  pendingWebauthnChallenge: { type: String, sparse: true },
+  challengeExpiresAt: { 
+    type: Date, 
+    sparse: true, 
+    expires: '5m'  // MongoDB auto-deletes after 5 minutes
+  },
+
   dailyBridgeUsage: {
     type: Map,
     of: mongoose.Schema.Types.Decimal128,
@@ -84,7 +90,6 @@ userSchema.index({ "passkeys.credentialID": 1 }, { unique: true });
 userSchema.index({ processing: 1, processingType: 1, processingStartedAt: 1 });
 userSchema.index({ retryCount: 1 });
 
-// Safe balance update method (using decimal.js)
 userSchema.methods.updateBalance = function(tokenSymbol, deltaAmount) {
   const current = this.balances.get(tokenSymbol)
     ? new Decimal(this.balances.get(tokenSymbol).toString())
