@@ -6,16 +6,25 @@ const cors = require('cors');
 const mongoose = require('mongoose');
 const cron = require('node-cron');
 const prom = require('prom-client');
+const path = require('path');
 
 const walletRoutes = require('./routes/walletRoutes');
+const authRoutes = require('./routes/auth');
 const logger = require('./utils/logger');
 const { performFullAudit } = require('./reconciler');
 const { runConfirmationCycle } = require('./services/ConfirmationEngine');
 const { startXrplListener, getSyncStatus } = require('./xrplListener');
+const { initSocket } = require('./services/socketService'); // assuming you have this
 
 // ─── Prometheus Registry ────────────────────────────────────────────────
 const register = new prom.Registry();
 prom.collectDefaultMetrics({ register });
+
+const passkeySuccessCounter = new prom.Counter({
+  name: 'seagull_passkey_login_success_total',
+  help: 'Total successful biometric logins',
+  registers: [register],
+});
 
 const maintenanceGauge = new prom.Gauge({
   name: 'seagull_maintenance_mode',
@@ -46,7 +55,10 @@ const criticalEnvVars = [
   'FLR_HOT_WALLET_KEY',
   'XLM_HOT_WALLET_SECRET',
   'HBAR_HOT_WALLET_KEY',
-  'ADMIN_SECRET', // added — used in admin auth
+  'ADMIN_SECRET',
+  'JWT_SECRET',
+  'RP_ID',
+  'FRONTEND_URL', // for CORS and origin validation
 ];
 
 criticalEnvVars.forEach(key => {
@@ -56,16 +68,25 @@ criticalEnvVars.forEach(key => {
   }
 });
 
-// ─── Maintenance Toggle ─────────────────────────────────────────────────
 let maintenanceMode = false;
 
 // ─── App Setup ──────────────────────────────────────────────────────────
 const app = express();
 app.use(helmet());
-app.use(cors({ origin: process.env.FRONTEND_URL || '*' }));
+app.use(cors({ 
+  origin: process.env.FRONTEND_URL, 
+  credentials: true // if using cookies/sessions later
+}));
 app.use(bodyParser.json());
 
-// Admin Auth Middleware
+// Mount routes with clear paths (prevents overwrite)
+app.use('/api/wallet', walletRoutes);
+app.use('/api/auth', authRoutes);
+
+// Serve frontend static files (assuming build is in backend/client/build)
+app.use(express.static(path.join(__dirname, 'client/build')));
+
+// Admin auth middleware
 const adminAuth = (req, res, next) => {
   if (req.headers['x-admin-key'] !== process.env.ADMIN_SECRET) {
     logger.warn({ event: 'unauthorized_admin_attempt', ip: req.ip });
@@ -75,13 +96,11 @@ const adminAuth = (req, res, next) => {
 };
 
 // ─── Database & Services ────────────────────────────────────────────────
-mongoose.connect(process.env.MONGO_URI, {
-  // useNewUrlParser & useUnifiedTopology deprecated in mongoose 6+
-})
+mongoose.connect(process.env.MONGO_URI)
   .then(async () => {
     logger.info({ event: 'mongodb_connected' });
 
-    // Initial audit on boot
+    // Initial audit
     try {
       const report = await performFullAudit();
       lastAuditStatus = report.overallStatus;
@@ -101,36 +120,23 @@ mongoose.connect(process.env.MONGO_URI, {
         lastAuditStatus = report.overallStatus;
         lastAuditTime = new Date().toISOString();
         lastAuditStatusGauge.set(report.overallStatus === 'SOLVENT' ? 1 : 0);
-
         if (report.overallStatus !== 'SOLVENT') {
-          logger.warn({
-            module: 'AuditCron',
-            status: report.overallStatus,
-            deficits: report.criticalDeficits,
-          });
-          // await sendCriticalAlert(`Audit deficit: ${JSON.stringify(report.criticalDeficits)}`);
+          logger.warn({ module: 'AuditCron', status: report.overallStatus });
         }
       } catch (err) {
         lastAuditStatus = 'FAILED';
         lastAuditStatusGauge.set(-1);
         logger.error({ module: 'AuditCron', error: err.message });
-        // await sendCriticalAlert(`Audit CRASHED: ${err.message}`);
       }
     });
 
     // Start XRPL listener
-    await startXrplListener().catch(err =>
-      logger.error({ module: 'XRPL', error: err.message })
-    );
+    await startXrplListener().catch(err => logger.error({ module: 'XRPL', error: err.message }));
 
-    // Confirmation cycle (every 30s)
+    // Confirmation cycle
     setInterval(() => {
-      if (maintenanceMode) {
-        return logger.info({ module: 'DepositEngine', event: 'cycle_skipped', reason: 'MAINTENANCE_MODE' });
-      }
-      runConfirmationCycle().catch(err =>
-        logger.error({ module: 'DepositEngine', error: err.message })
-      );
+      if (maintenanceMode) return logger.info({ module: 'DepositEngine', event: 'cycle_skipped', reason: 'MAINTENANCE_MODE' });
+      runConfirmationCycle().catch(err => logger.error({ module: 'DepositEngine', error: err.message }));
     }, 30000);
 
     logger.info({ event: 'all_services_online' });
@@ -140,10 +146,7 @@ mongoose.connect(process.env.MONGO_URI, {
     process.exit(1);
   });
 
-// ─── Routes ─────────────────────────────────────────────────────────────
-app.use('/api', walletRoutes);
-
-// ─── Health & Control ───────────────────────────────────────────────────
+// ─── Health & Metrics ───────────────────────────────────────────────────
 app.get('/health/status', (req, res) => {
   const status = getSyncStatus();
   xrplLagGauge.set(status.gap);
@@ -182,20 +185,28 @@ app.post('/admin/audit', adminAuth, async (req, res) => {
   }
 });
 
+// Serve frontend SPA (catch-all for non-API routes)
+app.get('*', (req, res) => {
+  res.sendFile(path.join(__dirname, 'client/build', 'index.html'));
+});
+
+// ─── Start Server & Socket ──────────────────────────────────────────────
+const server = app.listen(PORT, () => {
+  logger.info({ event: 'server_listening', port: PORT });
+});
+
+// Initialize socket.io with the HTTP server
+initSocket(server);
+
 // ─── Graceful Shutdown ──────────────────────────────────────────────────
 const gracefulShutdown = async (signal) => {
   logger.info({ event: 'shutdown_initiated', signal });
-  
+  maintenanceMode = true;
   try {
-    // 1. Stop processing new deposits first
-    maintenanceMode = true; 
-    
-    // 2. Close DB connection with a timeout
     await Promise.race([
       mongoose.connection.close(),
       new Promise((_, reject) => setTimeout(() => reject(new Error('DB Close Timeout')), 5000))
     ]);
-    
     logger.info({ event: 'shutdown_complete' });
     process.exit(0);
   } catch (err) {
@@ -203,8 +214,6 @@ const gracefulShutdown = async (signal) => {
     process.exit(1);
   }
 };
-
-
 
 process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 process.on('SIGINT', () => gracefulShutdown('SIGINT'));
