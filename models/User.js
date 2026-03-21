@@ -89,6 +89,9 @@ const userSchema = new mongoose.Schema({
 userSchema.index({ "passkeys.credentialID": 1 }, { unique: true });
 userSchema.index({ processing: 1, processingType: 1, processingStartedAt: 1 });
 userSchema.index({ retryCount: 1 });
+userSchema.index({ publicAddress: 1, nonce: 1 });
+// Add after existing indexes
+userSchema.index({ pendingWebauthnChallenge: 1 });               // fast find by challenge (rarely needed)
 
 userSchema.methods.updateBalance = function(tokenSymbol, deltaAmount) {
   const current = this.balances.get(tokenSymbol)
