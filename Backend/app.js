@@ -27,8 +27,20 @@ criticalEnvVars.forEach(key => {
   }
 });
 
+// 🛠️ MAINTENANCE TOGGLE
+let maintenanceMode = false;
+
 const app = express();
 app.use(bodyParser.json());
+
+// 🛡️ Admin Auth Middleware
+const adminAuth = (req, res, next) => {
+  if (req.headers['x-admin-key'] !== process.env.ADMIN_SECRET) {
+    logger.warn({ event: 'unauthorized_admin_attempt', ip: req.ip });
+    return res.status(401).send('Unauthorized');
+  }
+  next();
+};
 
 // 2. Database & Service Start
 mongoose.connect(process.env.MONGO_URI, {
@@ -38,13 +50,36 @@ mongoose.connect(process.env.MONGO_URI, {
   .then(async () => {
     console.log(`\x1b[36m%s\x1b[0m`, '📦 MongoDB Connected');
 
+    // 🔍 INITIAL AUDIT ON BOOT
+    performFullAudit()
+      .then(report => logger.info({ module: 'InitialAudit', status: report.overallStatus }))
+      .catch(err => logger.error({ module: 'InitialAudit', error: err.message }));
+
+    // 🕒 SCHEDULED AUDIT (Every hour)
+    cron.schedule('0 * * * *', async () => {
+  try {
+    const report = await performFullAudit();
+    if (report.overallStatus !== 'SOLVENT') {
+      logger.warn({ ... });
+      // await sendCriticalAlert(`Audit deficit: ${JSON.stringify(report.criticalDeficits)}`);
+    }
+  } catch (err) {
+    logger.error({ ... });
+    // await sendCriticalAlert(`Audit CRASHED: ${err.message}`);
+  }
+});
+
     // Start XRPL listener
     await startXrplListener().catch(err => 
       logger.error({ module: 'XRPL', error: err.message })
     );
 
-    // Start confirmation worker
+    // Start confirmation worker (Respects Maintenance Toggle)
     setInterval(() => {
+      if (maintenanceMode) {
+        return logger.info({ module: 'DepositEngine', event: 'cycle_skipped', reason: 'MAINTENANCE_MODE' });
+      }
+
       runConfirmationCycle().catch(err =>
         logger.error({ module: 'DepositEngine', error: err.message })
       );
@@ -60,37 +95,47 @@ mongoose.connect(process.env.MONGO_URI, {
 // 3. Routes
 app.use('/api', walletRoutes);
 
-// 4. Health Check
+// 4. Health & Control
 app.get('/health/status', (req, res) => {
   const status = getSyncStatus();
-  const isHealthy = status.processedLedger > 0 && status.gap < 20;
-
+  const isHealthy = status.processedLedger > 0 && status.gap < 20 && !maintenanceMode;
   res.status(isHealthy ? 200 : 503).json({
     timestamp: new Date().toISOString(),
     healthy: isHealthy,
-    xrpl: status,
-    limits: {
-      SeagullCash: "25M/Day",
-      SeagullCoin: "100k/Day"
-    }
+    maintenance: maintenanceMode,
+    xrpl: status
   });
 });
 
-// Run every hour on the hour
-cron.schedule('0 * * * *', async () => {
+// 🛑 Private Maintenance Toggle
+app.post('/admin/maintenance', adminAuth, (req, res) => {
+  const { enabled } = req.body;
+  maintenanceMode = !!enabled;
+  logger.info({ module: 'Admin', event: 'maintenance_mode_change', enabled: maintenanceMode });
+  res.json({ success: true, maintenance: maintenanceMode });
+});
+
+// 🔍 Manual Audit Trigger
+app.post('/admin/audit', adminAuth, async (req, res) => {
   try {
     const report = await performFullAudit();
-    if (report.overallStatus !== 'SOLVENT') {
-      console.warn(`[AUDIT WARNING] Status: ${report.overallStatus}`);
-    }
+    res.json(report);
   } catch (err) {
-    console.error('[CRON ERROR] Audit failed to execute:', err.message);
+    res.status(500).json({ error: err.message });
   }
 });
+
+const gracefulShutdown = async (signal) => {
+  logger.info({ event: 'shutdown_initiated', signal });
+  // Close mongoose, listeners, etc.
+  await mongoose.connection.close();
+  process.exit(0);
+};
+
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`\x1b[35m%s\x1b[0m`, `📡 Server listening on Port ${PORT}`);
 });
-
-module.exports = { app };
