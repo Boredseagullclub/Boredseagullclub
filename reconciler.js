@@ -182,6 +182,18 @@ async function getVerifiedOnChainBalances() {
         new Decimal(10).pow(decimals)
       );
 
+      // Inside the EVM loop
+const tokenBalances = await Promise.all(tokenEntries.map(async ([token, spec]) => {
+  const contract = new ethers.Contract(spec.networks[chain].contract, abi, provider);
+  const bal = await contract.balanceOf(depositAddr);
+  return { token, bal, dec: spec.networks[chain].decimals || 18 };
+}));
+
+tokenBalances.forEach(({ token, bal, dec }) => {
+  balances[token] = new Decimal(bal.toString()).div(new Decimal(10).pow(dec));
+});
+
+
       // ERC-20
       const tokenEntries = Object.entries(config.TOKENS).filter(
         ([_, spec]) => spec.networks?.[chain]?.contract
