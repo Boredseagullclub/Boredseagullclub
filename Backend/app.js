@@ -2,6 +2,8 @@ require('dotenv').config();
 const express = require('express');
 const bodyParser = require('body-parser');
 const mongoose = require('mongoose');
+const cron = require('node-cron');
+const { performFullAudit } = require('./reconciler');
 
 const walletRoutes = require('./routes/walletRoutes');
 const logger = require('./utils/logger');
@@ -72,6 +74,18 @@ app.get('/health/status', (req, res) => {
       SeagullCoin: "100k/Day"
     }
   });
+});
+
+// Run every hour on the hour
+cron.schedule('0 * * * *', async () => {
+  try {
+    const report = await performFullAudit();
+    if (report.overallStatus !== 'SOLVENT') {
+      console.warn(`[AUDIT WARNING] Status: ${report.overallStatus}`);
+    }
+  } catch (err) {
+    console.error('[CRON ERROR] Audit failed to execute:', err.message);
+  }
 });
 
 const PORT = process.env.PORT || 3000;
