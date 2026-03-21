@@ -165,7 +165,7 @@ const start = async () => {
 
     setInterval(() => {
       if (!maintenanceMode) runConfirmationCycle().catch(e => logger.error({ module: 'DepositEngine', error: e.message }));
-    }, 30000);
+    }, 10000);
 
     // 5. Start server
     const server = app.listen(PORT, () => {
