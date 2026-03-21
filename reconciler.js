@@ -168,47 +168,39 @@ async function getVerifiedOnChainBalances() {
   for (const chain of ['XDC', 'FLR']) {
     try {
       const rpcUrl = process.env[`${chain}_RPC_URL`];
-      if (!rpcUrl) throw new Error(`No RPC URL for ${chain}`);
+      const depositAddr = process.env[`${chain}_DEPOSIT_ADDRESS`]?.toLowerCase();
+      if (!rpcUrl || !depositAddr) throw new Error(`Missing config for ${chain}`);
 
       const provider = new ethers.JsonRpcProvider(rpcUrl);
-      const depositAddr = process.env[`${chain}_DEPOSIT_ADDRESS`]?.toLowerCase();
-      if (!depositAddr) throw new Error(`No deposit address for ${chain}`);
 
-      // Native
+      // 1. Native Balance (Still sequential, but just one call)
       const nativeBal = await provider.getBalance(depositAddr);
       const nativeSymbol = config.CHAINS?.[chain]?.nativeSymbol || chain;
-      const decimals = config.CHAINS?.[chain]?.decimals || 18;
-      balances[nativeSymbol] = new Decimal(nativeBal.toString()).div(
-        new Decimal(10).pow(decimals)
-      );
+      const nativeDec = config.CHAINS?.[chain]?.decimals || 18;
+      balances[nativeSymbol] = new Decimal(nativeBal.toString()).div(new Decimal(10).pow(nativeDec));
 
-      // Inside the EVM loop
-const tokenBalances = await Promise.all(tokenEntries.map(async ([token, spec]) => {
-  const contract = new ethers.Contract(spec.networks[chain].contract, abi, provider);
-  const bal = await contract.balanceOf(depositAddr);
-  return { token, bal, dec: spec.networks[chain].decimals || 18 };
-}));
+      // 2. Token Balances (Parallel Execution)
+      const tokenEntries = Object.entries(config.TOKENS).filter(([_, spec]) => spec.networks?.[chain]?.contract);
+      const abi = ['function balanceOf(address) view returns (uint256)'];
 
-tokenBalances.forEach(({ token, bal, dec }) => {
-  balances[token] = new Decimal(bal.toString()).div(new Decimal(10).pow(dec));
-});
+      const tokenBalances = await Promise.all(tokenEntries.map(async ([token, spec]) => {
+        try {
+          const contract = new ethers.Contract(spec.networks[chain].contract, abi, provider);
+          const bal = await contract.balanceOf(depositAddr);
+          return { token, bal, dec: spec.networks[chain].decimals || 18 };
+        } catch (e) {
+          logger.warn({ module: 'Reconciler', chain, token, error: 'Token fetch failed' });
+          return { token, bal: 0, dec: 18, failed: true };
+        }
+      }));
 
+      // 3. Update Balances (Summing for multi-chain assets)
+      tokenBalances.forEach(({ token, bal, dec, failed }) => {
+        if (failed) return;
+        const current = balances[token] || new Decimal(0);
+        balances[token] = current.plus(new Decimal(bal.toString()).div(new Decimal(10).pow(dec)));
+      });
 
-      // ERC-20
-      const tokenEntries = Object.entries(config.TOKENS).filter(
-        ([_, spec]) => spec.networks?.[chain]?.contract
-      );
-
-      for (const [token, spec] of tokenEntries) {
-        const contractAddr = spec.networks[chain].contract.toLowerCase();
-        const abi = ['function balanceOf(address) view returns (uint256)'];
-        const contract = new ethers.Contract(contractAddr, abi, provider);
-        const bal = await contract.balanceOf(depositAddr);
-        const tokenDec = spec.networks[chain].decimals || 18;
-        balances[token] = new Decimal(bal.toString()).div(
-          new Decimal(10).pow(tokenDec)
-        );
-      }
     } catch (err) {
       errors.push({ chain, error: err.message });
       logger.error({ module: 'Reconciler', chain, error: err.message });
