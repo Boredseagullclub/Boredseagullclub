@@ -10,7 +10,7 @@ const {
 const User = require('../models/User');
 const jwt = require('jsonwebtoken');
 const { verifySwapSignature } = require('../services/SignatureService');
-const { passkeySuccessCounter } = require('../app'); // Import counter from app.js (or use a shared metrics file)
+const { passkeySuccessCounter } = require('../app'); // Import from app.js (or use shared metrics file)
 
 const RP_ID = process.env.RP_ID || 'localhost';
 const RP_NAME = 'Seagull Exchange';
@@ -25,9 +25,9 @@ function signToken(user) {
   );
 }
 
-// 1. Registration Start – now requires wallet signature proof
+// 1. Registration Start – requires wallet signature proof
 router.post('/passkey/register/start', async (req, res) => {
-  const { publicAddress, signature, nonce, timestamp, chain } = req.body;
+  const { publicAddress, signature, nonce, timestamp, chain, publicKey } = req.body;
 
   // Require proof of wallet ownership
   if (!signature || !nonce || !timestamp || !chain) {
@@ -36,9 +36,9 @@ router.post('/passkey/register/start', async (req, res) => {
 
   const isValid = await verifySwapSignature({
     walletAddress: publicAddress,
-    publicKey: req.body.publicKey, // Required for XRPL/HBAR, optional for others
+    publicKey, // Required for XRPL/HBAR, optional for EVM
     signature,
-    fromToken: 'any', // dummy
+    fromToken: 'any', // dummy values
     toToken: 'any',
     amount: '0',
     nonce,
@@ -75,7 +75,7 @@ router.post('/passkey/register/start', async (req, res) => {
   res.json(options);
 });
 
-// 2. Registration Finish (unchanged – signature already verified in /start)
+// 2. Registration Finish (signature already verified in /start)
 router.post('/passkey/register/finish', async (req, res) => {
   const { publicAddress, response } = req.body;
   const user = await User.findOne({ publicAddress });
@@ -139,7 +139,7 @@ router.post('/passkey/login/start', async (req, res) => {
   res.json(options);
 });
 
-// 4. Login Finish – now increments success counter
+// 4. Login Finish – increments success counter on success
 router.post('/passkey/login/finish', async (req, res) => {
   const { publicAddress, response } = req.body;
   const user = await User.findOne({ publicAddress });
@@ -176,7 +176,7 @@ router.post('/passkey/login/finish', async (req, res) => {
 
     await user.save();
 
-    // SUCCESS: Increment Prometheus counter
+    // SUCCESS: Track successful passkey login
     passkeySuccessCounter.inc();
 
     const token = signToken(user);
