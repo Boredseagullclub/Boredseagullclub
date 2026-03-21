@@ -14,11 +14,11 @@ const { checkAndLockQuota } = require('../services/quotaGuard');
 const { executeOnChainPayout } = require('../services/payoutEngine');
 
 // ────────────────────────────────────────────────
-// Rate limiting (global + per-user)
+// Rate limiting (global + per-user + withdrawal-specific)
 // ────────────────────────────────────────────────
 const globalWithdrawLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 25,                   // max 25 attempts per IP per 15 min
+  max: 25,
   message: { error: 'Too many withdrawal requests — slow down' },
   standardHeaders: true,
   legacyHeaders: false,
@@ -26,10 +26,20 @@ const globalWithdrawLimiter = rateLimit({
 
 const perUserWithdrawLimiter = rateLimit({
   windowMs: 60 * 60 * 1000, // 1 hour
-  max: 10,                   // max 10 withdrawals per user per hour
-  keyGenerator: (req) => req.user?.userId || req.ip, // fallback to IP if no user
+  max: 10,
+  keyGenerator: (req) => req.user?.userId || req.ip,
   skip: (req) => !req.user?.userId,
   message: { error: 'You have reached the hourly withdrawal limit' },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+// Dedicated limiter just for the /withdraw endpoint
+const strictWithdrawLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000, // 1 hour
+  max: 5,                   // stricter: only 5 withdrawals per hour
+  keyGenerator: (req) => req.user?.userId || req.ip,
+  message: { error: 'Withdrawal rate limit reached — wait 1 hour' },
   standardHeaders: true,
   legacyHeaders: false,
 });
@@ -52,23 +62,22 @@ router.post('/wallet', async (req, res) => {
 });
 
 // ────────────────────────────────────────────────
-// Withdrawal (protected + validated + rate-limited)
+// Withdrawal (protected + validated + triple rate-limited)
 // ────────────────────────────────────────────────
 router.post(
   '/withdraw',
-  authenticateJWT,                    // 1. Must be logged in
-  globalWithdrawLimiter,              // 2. IP-based global limit
-  perUserWithdrawLimiter,             // 3. Per-user limit
-  validateAddress,                    // 4. Address format + checksum check
+  authenticateJWT,                    // Must be logged in
+  globalWithdrawLimiter,              // IP-based global
+  perUserWithdrawLimiter,             // Per-user hourly
+  strictWithdrawLimiter,              // Strictest: 5/hour
+  validateAddress,                    // Address validation
   async (req, res) => {
     const { token, amount, destination, chain } = req.body;
 
-    // Basic input validation (amount should be positive number)
     if (!token || !amount || !destination || !chain) {
       return res.status(400).json({ error: 'Missing required fields' });
     }
 
-    // Quick early check: amount > 0
     const decAmount = new Decimal(amount);
     if (decAmount.isNaN() || decAmount.lte(0)) {
       return res.status(400).json({ error: 'Amount must be a positive number' });
@@ -77,27 +86,23 @@ router.post(
     const session = await mongoose.startSession();
     try {
       await session.withTransaction(async () => {
-        // 1. Load user
         const user = await User.findById(req.user.userId).session(session);
         if (!user) {
           throw new Error('User not found');
         }
 
-        // 2. Balance check
+        // Balance check
         const bal = user.balances?.get(token);
         if (!bal || new Decimal(bal.toString()).lt(decAmount)) {
           throw new Error('Insufficient balance');
         }
 
-        // 3. Treasury quota check (atomic)
         await checkAndLockQuota(token, amount, session);
 
-        // 4. Subtract balance
         const newBal = new Decimal(bal.toString()).minus(decAmount).toString();
         user.balances.set(token, mongoose.Types.Decimal128.fromString(newBal));
         await user.save({ session });
 
-        // 5. Create pending withdrawal
         const [withdrawal] = await Withdrawal.create(
           [{
             userId: user._id,
@@ -111,10 +116,8 @@ router.post(
           { session }
         );
 
-        // Commit transaction
         await session.commitTransaction();
 
-        // 6. Trigger payout asynchronously (fire-and-forget)
         executeOnChainPayout(withdrawal._id)
           .then((txHash) => {
             Withdrawal.updateOne(
@@ -130,7 +133,6 @@ router.post(
             console.error('Payout failed:', err);
           });
 
-        // Response to client
         res.json({
           success: true,
           message: 'Withdrawal request accepted — processing',
