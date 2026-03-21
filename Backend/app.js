@@ -186,12 +186,24 @@ app.post('/admin/audit', adminAuth, async (req, res) => {
 const gracefulShutdown = async (signal) => {
   logger.info({ event: 'shutdown_initiated', signal });
   
-  // If your listener has a stop/close method:
-  // await stopXrplListener().catch(err => logger.error({ event: 'xrpl_stop_failed' }));
-  
-  await mongoose.connection.close();
-  process.exit(0);
+  try {
+    // 1. Stop processing new deposits first
+    maintenanceMode = true; 
+    
+    // 2. Close DB connection with a timeout
+    await Promise.race([
+      mongoose.connection.close(),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('DB Close Timeout')), 5000))
+    ]);
+    
+    logger.info({ event: 'shutdown_complete' });
+    process.exit(0);
+  } catch (err) {
+    logger.error({ event: 'shutdown_error', error: err.message });
+    process.exit(1);
+  }
 };
+
 
 
 process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
