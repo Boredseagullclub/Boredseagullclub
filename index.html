@@ -1,171 +1,214 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>Seagull Assets • Multi-Chain Bridge</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@500;600;700&display=swap" rel="stylesheet">
-  <style>
-    body {
-      margin: 0;
-      font-family: 'Poppins', sans-serif;
-      background: linear-gradient(135deg, #0a1f38 0%, #1a3a5c 100%);
-      color: white;
-      min-height: 100vh;
-      background-attachment: fixed;
-    }
-    body::before {
-      content: '';
-      position: fixed;
-      inset: 0;
-      background: url('https://images.unsplash.com/photo-1507525428034-b723cf961d3e?ixlib=rb-4.0.3&auto=format&fit=crop&w=2073&q=80') center/cover;
-      opacity: 0.12;
-      z-index: -1;
-    }
-    .container {
-      max-width: 960px;
-      margin: 0 auto;
-      padding: 5rem 1.5rem 3rem;
-      text-align: center;
-    }
-    h1 {
-      font-size: 3.8rem;
-      margin-bottom: 0.6rem;
-      color: #00eaff;
-      text-shadow: 0 4px 20px rgba(0,234,255,0.4);
-    }
-    .tagline {
-      font-size: 1.5rem;
-      opacity: 0.9;
-      margin-bottom: 3.5rem;
-    }
-    .chains-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-      gap: 1.5rem;
-      margin: 2rem 0 4rem;
-    }
-    .chain {
-      background: rgba(255,255,255,0.07);
-      border: 1px solid rgba(0,234,255,0.25);
-      border-radius: 16px;
-      padding: 1.8rem 1rem;
-      backdrop-filter: blur(8px);
-    }
-    .chain h3 {
-      color: #00eaff;
-      margin-bottom: 0.6rem;
-      font-size: 1.3rem;
-    }
-    #connectButton {
-      background: linear-gradient(90deg, #00d4ff, #0095ff);
-      color: white;
-      border: none;
-      padding: 1.2rem 2.8rem;
-      font-size: 1.3rem;
-      font-weight: 600;
-      border-radius: 50px;
-      cursor: pointer;
-      transition: all 0.3s;
-      box-shadow: 0 8px 30px rgba(0,212,255,0.35);
-      margin: 2rem 0 1.5rem;
-    }
-    #connectButton:hover {
-      transform: translateY(-4px);
-      box-shadow: 0 12px 40px rgba(0,212,255,0.5);
-    }
-    #walletInfo {
-      font-size: 1.1rem;
-      margin: 1.5rem 0;
-      padding: 1rem;
-      background: rgba(0,255,127,0.1);
-      border-radius: 12px;
-      border: 1px solid rgba(0,255,127,0.3);
-      display: none;
-    }
-    .status {
-      margin: 2.5rem 0;
-      font-size: 1.2rem;
-      opacity: 0.85;
-      line-height: 1.6;
-    }
-    footer {
-      padding: 3rem 1rem;
-      text-align: center;
-      opacity: 0.7;
-      font-size: 1rem;
-    }
-  </style>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Seagull Assets</title>
+    <style>
+        body {
+            margin: 0;
+            font-family: Arial, Helvetica, sans-serif;
+            background: url('https://images.unsplash.com/photo-1507525428034-b723cf961d3e?ixlib=rb-4.0.3&auto=format&fit=crop&w=2073&q=80') no-repeat center center fixed;
+            background-size: cover;
+            color: #fff;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            text-align: center;
+            padding: 2rem;
+            box-sizing: border-box;
+        }
+
+        /* Dark ocean overlay for text readability */
+        body::before {
+            content: "";
+            position: absolute;
+            inset: 0;
+            background: rgba(10, 31, 56, 0.65);
+            z-index: -1;
+        }
+
+        #connectOverlay {
+            position: fixed;
+            inset: 0;
+            background: rgba(0, 0, 0, 0.7);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            z-index: 1000;
+        }
+
+        #connectOverlay.hidden {
+            display: none;
+        }
+
+        h1 {
+            font-size: 3.2rem;
+            margin-bottom: 1.5rem;
+            text-shadow: 0 4px 12px rgba(0,0,0,0.8);
+        }
+
+        #connectButton {
+            background: linear-gradient(90deg, #00d4ff, #0095ff);
+            color: white;
+            border: none;
+            padding: 1.2rem 3rem;
+            font-size: 1.4rem;
+            font-weight: bold;
+            border-radius: 50px;
+            cursor: pointer;
+            box-shadow: 0 8px 30px rgba(0,212,255,0.5);
+            transition: all 0.3s;
+        }
+
+        #connectButton:hover {
+            transform: scale(1.05);
+            box-shadow: 0 12px 40px rgba(0,212,255,0.7);
+        }
+
+        #mainContent {
+            display: none;
+            z-index: 1;
+        }
+
+        #mainContent.visible {
+            display: block;
+        }
+
+        div {
+            margin: 1.5rem 0;
+        }
+
+        label {
+            font-size: 1.4rem;
+            margin-right: 1rem;
+            min-width: 130px;
+            text-align: left;
+            display: inline-block;
+        }
+
+        select, input[type="number"] {
+            padding: 0.9rem 1.3rem;
+            font-size: 1.2rem;
+            border-radius: 10px;
+            border: 1px solid #00d4ff;
+            background: rgba(255,255,255,0.15);
+            color: white;
+            min-width: 240px;
+        }
+
+        button#swapButton {
+            margin-top: 2.5rem;
+            padding: 1.2rem 4rem;
+            font-size: 1.5rem;
+            background: linear-gradient(90deg, #ff6f61, #ff8c7a);
+            border: none;
+            border-radius: 50px;
+            color: white;
+            cursor: pointer;
+            box-shadow: 0 6px 20px rgba(255,111,97,0.5);
+        }
+
+        #result {
+            margin-top: 2.5rem;
+            padding: 1.8rem;
+            background: rgba(0,0,0,0.5);
+            border-radius: 12px;
+            min-height: 120px;
+            max-width: 700px;
+            font-family: monospace;
+            color: #d0ffd0;
+            white-space: pre-wrap;
+        }
+    </style>
 </head>
 <body>
 
-  <div class="container">
-    <h1>Seagull Assets</h1>
-    <div class="tagline">Non-custodial bridge • XRPL • Stellar • XDC • Flare • Hedera</div>
-
-    <div class="chains-grid">
-      <div class="chain"><h3>XRPL (XRP)</h3><p>Native + Issued assets</p></div>
-      <div class="chain"><h3>Stellar (XLM)</h3><p>Fast cross-border</p></div>
-      <div class="chain"><h3>XDC Network</h3><p>Enterprise EVM</p></div>
-      <div class="chain"><h3>Flare (FLR)</h3><p>Data-connected</p></div>
-      <div class="chain"><h3>Hedera (HBAR)</h3><p>High throughput</p></div>
+    <!-- Wallet Connect Prompt (shows first) -->
+    <div id="connectOverlay">
+        <h1>Seagull Assets</h1>
+        <p style="font-size:1.4rem; margin:1.5rem 0 2.5rem;">Connect your wallet to continue</p>
+        <button id="connectButton">Connect Wallet</button>
     </div>
 
-    <button id="connectButton">Connect Wallet</button>
-    <div id="walletInfo"></div>
+    <!-- Main swap form (hidden until connected) -->
+    <div id="mainContent">
+        <h1>Seagull Assets Swap</h1>
 
-    <div class="status">
-      Multi-chain engine active (deposits, payouts, audits).<br>
-      Full interface in development — connect to preview supported chains.
+        <div>
+            <label>From Pool:</label>
+            <select id="fromPool">
+                <option value="xrp_pool">XRP</option>
+                <option value="flr_pool">FLR</option>
+                <option value="xdc_pool">XDC</option>
+            </select>
+        </div>
+
+        <div>
+            <label>To Pool:</label>
+            <select id="toPool">
+                <option value="xrp_pool">XRP</option>
+                <option value="flr_pool">FLR</option>
+                <option value="xdc_pool">XDC</option>
+            </select>
+        </div>
+
+        <div>
+            <label>Amount:</label>
+            <input type="number" id="amount" />
+        </div>
+
+        <button id="swapButton" onclick="swap()">Swap</button>
+
+        <pre id="result"></pre>
     </div>
-  </div>
 
-  <footer>
-    © 2026 Bored Seagull Club • XRPL-first multi-chain infrastructure
-  </footer>
+    <!-- WalletConnect Modal v2 (CDN - one universal button) -->
+    <script type="module">
+        import { createAppKit } from 'https://cdn.jsdelivr.net/npm/@reown/appkit@latest/dist/appkit.js';
 
-  <!-- WalletConnect Modal v2 (CDN) -->
-  <script type="module">
-    import { createAppKit } from 'https://cdn.jsdelivr.net/npm/@reown/appkit@latest/dist/appkit.js';
+        const projectId = 'YOUR_PROJECT_ID_HERE';  // ← Replace with real WalletConnect Project ID from https://cloud.walletconnect.com
 
-    const projectId = 'YOUR_WALLETCONNECT_PROJECT_ID_HERE';  // ← Get free from https://cloud.walletconnect.com (required)
+        const metadata = {
+            name: 'Seagull Assets',
+            description: 'Multi-chain bridge & swap',
+            url: window.location.origin,
+            icons: []  // optional
+        };
 
-    const metadata = {
-      name: 'Seagull Assets',
-      description: 'Multi-chain bridge for XRPL, Stellar, XDC, Flare, Hedera',
-      url: window.location.origin,
-      icons: ['https://your-icon-url.com/icon.png']  // optional, replace or remove
-    };
+        let modal;
+        (async () => {
+            modal = await createAppKit({
+                projectId,
+                metadata,
+                features: { analytics: true, email: false, socials: false }
+            });
 
-    const modal = await createAppKit({
-      projectId,
-      chains: [/* Add chain configs if you want to limit, e.g. Flare, XDC */],
-      metadata,
-      features: {
-        analytics: true,           // optional
-        email: false,              // disable if not needed
-        socials: false
-      }
-    });
+            // Button opens modal
+            document.getElementById('connectButton').addEventListener('click', () => {
+                modal.open();
+            });
 
-    // Single button triggers the modal
-    document.getElementById('connectButton').addEventListener('click', () => {
-      modal.open();
-    });
+            // On successful connect → hide overlay, show form
+            modal.subscribeEvents(event => {
+                if (event.type === 'connect') {
+                    document.getElementById('connectOverlay').classList.add('hidden');
+                    document.getElementById('mainContent').classList.add('visible');
+                }
+            });
+        })();
+    </script>
 
-    // Optional: show connected address when session starts
-    modal.subscribeEvents(event => {
-      if (event.type === 'connect') {
-        const address = event.data?.session?.namespaces?.eip155?.accounts?.[0]?.split(':').pop();
-        if (address) {
-          document.getElementById('walletInfo').textContent = `Connected: ${address.slice(0,6)}...${address.slice(-4)}`;
-          document.getElementById('walletInfo').style.display = 'block';
+    <script>
+        function swap() {
+            const result = document.getElementById('result');
+            result.textContent = 'Wallet connected. Swap requested – processing backend call.';
+            // In real version: fetch('/api/swap', ...) here
         }
-      }
-    });
-  </script>
+    </script>
 
 </body>
 </html>
