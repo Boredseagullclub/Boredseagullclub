@@ -1,4 +1,5 @@
-const AccountNonce = require('../models/AccountNonce');
+// services/nonceManager.js
+const Nonce = require('../models/Nonce');  // ← now points to the updated models/Nonce.js
 
 async function getAndIncrementNonce(walletAddress, chain) {
   const filter = { 
@@ -14,14 +15,14 @@ async function getAndIncrementNonce(walletAddress, chain) {
     setDefaultsOnInsert: true 
   };
 
-  const doc = await AccountNonce.findOneAndUpdate(filter, update, options);
+  const doc = await Nonce.findOneAndUpdate(filter, update, options);
   return doc.nextNonce - 1;  // the nonce to use NOW
 }
 
 async function syncNonceWithChain(walletAddress, chain, provider) {
   const onChainNonce = await provider.getTransactionCount(walletAddress, 'pending');
 
-  await AccountNonce.findOneAndUpdate(
+  await Nonce.findOneAndUpdate(
     { walletAddress: walletAddress.toLowerCase().trim(), chain: chain.toUpperCase() },
     { $set: { nextNonce: onChainNonce } },
     { upsert: true }
