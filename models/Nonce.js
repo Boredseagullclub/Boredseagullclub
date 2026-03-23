@@ -2,12 +2,27 @@
 const mongoose = require('mongoose');
 
 const nonceSchema = new mongoose.Schema({
-  walletAddress: { type: String, required: true },
-  nonce: { type: Number, required: true },
-  chain: { type: String, required: true },
-}, { timestamps: true });
+  walletAddress: { 
+    type: String, 
+    required: true, 
+    lowercase: true, 
+    trim: true 
+  },
+  chain: { 
+    type: String, 
+    required: true, 
+    uppercase: true 
+  },
+  nextNonce: { 
+    type: Number, 
+    required: true, 
+    default: 0,
+    min: 0
+  },
+}, { 
+  timestamps: true 
+});
 
-nonceSchema.index({ walletAddress: 1, nonce: 1, chain: 1 }, { unique: true });
-nonceSchema.index({ createdAt: 1 }, { expireAfterSeconds: 3600 }); // auto-delete after 1hr
+nonceSchema.index({ walletAddress: 1, chain: 1 }, { unique: true });
 
 module.exports = mongoose.model('Nonce', nonceSchema);
