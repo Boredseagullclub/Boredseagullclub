@@ -1,7 +1,8 @@
 const { ethers } = require('ethers');
 const Withdrawal = require('../models/Withdrawal');
-const { performFullAudit } = require('./reconciler'); // Use your existing auditor
+const { performFullAudit } = require('./reconciler');
 const logger = require('../utils/logger');
+const { getAndIncrementNonce, syncNonceWithChain } = require('../services/nonceManager');  // ← ADD THIS LINE
 
 /**
  * Executes on-chain payout with a pre-flight solvency check 
@@ -12,7 +13,6 @@ async function executeOnChainPayout(withdrawalId) {
   if (!withdrawal || withdrawal.status !== 'PENDING') return;
 
   // ─── 1. THE CIRCUIT BREAKER (PRE-FLIGHT) ────────────────────────
-  // Never send money if the system is in deficit or the audit failed.
   try {
     const audit = await performFullAudit();
     if (audit.overallStatus !== 'SOLVENT') {
@@ -38,22 +38,41 @@ async function executeOnChainPayout(withdrawalId) {
 
   let attempt = 0;
   const maxAttempts = 5;
-  let currentNonce = await wallet.getNonce('pending');
 
   // ─── 2. THE SIGNING LOOP (GAS BUMPING) ──────────────────────────
   while (attempt < maxAttempts) {
     try {
+      // ─── NONCE LOGIC: Only for EVM chains ────────────────────────
+      let nonce;
+      if (['XDC', 'FLR'].includes(chain)) {
+        const depositAddress = process.env[`${chain}_DEPOSIT_ADDRESS`];
+
+        // Optional pre-sync (recommended for production)
+        try {
+          await syncNonceWithChain(depositAddress, chain, provider);
+          logger.info({ module: 'PayoutEngine', event: 'NONCE_SYNCED', chain, withdrawalId });
+        } catch (syncErr) {
+          logger.warn({ module: 'PayoutEngine', event: 'NONCE_SYNC_FAILED', chain, error: syncErr.message });
+          // Continue — we can still try
+        }
+
+        nonce = await getAndIncrementNonce(depositAddress, chain);
+        logger.info({ module: 'PayoutEngine', event: 'NONCE_ALLOCATED', chain, nonce, withdrawalId });
+      } else {
+        // For non-EVM chains (XRPL, XLM, HBAR) — no nonce needed
+        nonce = undefined;
+      }
+
       const feeData = await provider.getFeeData();
-      // Increase gas by 20% on every loop iteration
-      const multiplier = 115n + (BigInt(attempt) * 20n); 
+      const multiplier = 115n + (BigInt(attempt) * 20n);
       const gasPrice = (feeData.gasPrice * multiplier) / 100n;
 
       const txRequest = {
         to: withdrawal.toAddress,
-        value: ethers.parseUnits(withdrawal.amount.toString(), 18), // Ensure decimals match asset
-        nonce: currentNonce, 
-        gasPrice: gasPrice,
-        gasLimit: 21000, 
+        value: ethers.parseUnits(withdrawal.amount.toString(), 18),
+        nonce,                     // ← now safe for EVM!
+        gasPrice,
+        gasLimit: 21000,
       };
 
       const txResponse = await wallet.sendTransaction(txRequest);
@@ -83,7 +102,6 @@ async function executeOnChainPayout(withdrawalId) {
         continue; // Loop again with higher gas but SAME nonce
       }
 
-      // If it's a "nonce too low" or "already known", it means a previous attempt actually worked
       if (err.message.includes('nonce too low') || err.message.includes('already known')) {
         logger.info({ module: 'PayoutEngine', event: 'TX_ALREADY_MINED', withdrawalId });
         return;
