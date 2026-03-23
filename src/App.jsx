@@ -11,22 +11,20 @@ function App() {
   const [token, setToken] = useState(localStorage.getItem('token') || '');
   const [balances, setBalances] = useState({});
   const [notifications, setNotifications] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
 
-  const [withdraw, setWithdraw] = useState({
-    token: 'XRP',
-    amount: '',
-    destination: '',
-    chain: 'XRP',
-  });
-
-  // Socket for real-time deposits
+  // Socket.IO
   useEffect(() => {
     if (!token) return;
 
-    const socket = io(SOCKET_URL, { auth: { token } });
+    const socket = io(SOCKET_URL, {
+      auth: { token },
+      reconnection: true,
+    });
 
     socket.on('connect', () => {
-      socket.emit('join', 'user-room'); // Replace with real user ID later
+      socket.emit('join', 'user-placeholder'); // TODO: replace with real userId
     });
 
     socket.on('DEPOSIT_CREDITED', (data) => {
@@ -34,28 +32,34 @@ function App() {
       fetchBalances();
     });
 
+    socket.on('connect_error', (err) => console.error('Socket error:', err));
+
     return () => socket.disconnect();
   }, [token]);
 
-  // Fetch balances
   const fetchBalances = async () => {
+    if (!token) return;
+    setLoading(true);
     try {
       const res = await axios.get(`${API_BASE}/wallet/balances`, {
         headers: { Authorization: `Bearer ${token}` },
       });
       setBalances(res.data.balances || {});
+      setError(null);
     } catch (err) {
-      console.error('Failed to fetch balances', err);
+      setError('Failed to load balances');
+    } finally {
+      setLoading(false);
     }
   };
 
-  // Register passkey
   const register = async () => {
+    setLoading(true);
+    setError(null);
     try {
       const { data: options } = await axios.post(`${API_BASE}/auth/passkey/register/start`, {
         publicAddress,
-        // Add real wallet signature later
-        signature: 'mock-sig',
+        signature: 'mock-sig', // TODO: real wallet sig
         nonce: Date.now(),
         timestamp: Date.now(),
         chain: 'XRP',
@@ -70,15 +74,18 @@ function App() {
 
       localStorage.setItem('token', data.token);
       setToken(data.token);
-      fetchBalances();
+      await fetchBalances();
       alert('Registered & logged in!');
     } catch (err) {
-      alert('Registration failed: ' + err.message);
+      setError(err.message || 'Registration failed');
+    } finally {
+      setLoading(false);
     }
   };
 
-  // Login with passkey
   const login = async () => {
+    setLoading(true);
+    setError(null);
     try {
       const { data: options } = await axios.post(`${API_BASE}/auth/passkey/login/start`, {
         publicAddress,
@@ -93,52 +100,73 @@ function App() {
 
       localStorage.setItem('token', data.token);
       setToken(data.token);
-      fetchBalances();
+      await fetchBalances();
       alert('Logged in!');
     } catch (err) {
-      alert('Login failed: ' + err.message);
+      setError(err.message || 'Login failed');
+    } finally {
+      setLoading(false);
     }
   };
 
-  // Withdraw
+  const logout = () => {
+    localStorage.removeItem('token');
+    setToken('');
+    setBalances({});
+    setNotifications([]);
+    setError(null);
+  };
+
   const doWithdraw = async (e) => {
     e.preventDefault();
+    setLoading(true);
+    setError(null);
     try {
       await axios.post(`${API_BASE}/withdraw`, withdraw, {
         headers: { Authorization: `Bearer ${token}` },
       });
       alert('Withdrawal requested!');
     } catch (err) {
-      alert('Withdraw failed: ' + (err.response?.data?.error || err.message));
+      setError(err.response?.data?.error || 'Withdrawal failed');
+    } finally {
+      setLoading(false);
     }
   };
 
   return (
-    <div style={{ padding: '2rem', maxWidth: '700px', margin: '0 auto' }}>
-      <h1>Seagull Wallet (Non-Custodial)</h1>
+    <div style={{ padding: '2rem', maxWidth: '700px', margin: '0 auto', fontFamily: 'Arial, sans-serif' }}>
+      <h1 style={{ textAlign: 'center' }}>Seagull Wallet (Non-Custodial)</h1>
+
+      {error && <p style={{ color: 'red', textAlign: 'center' }}>{error}</p>}
 
       {!token ? (
-        <div>
+        <div style={{ textAlign: 'center' }}>
           <input
             type="text"
-            placeholder="Your wallet address (r... / 0x...)"
+            placeholder="Your wallet address (r... or 0x...)"
             value={publicAddress}
-            onChange={(e) => setPublicAddress(e.target.value)}
-            style={{ width: '100%', marginBottom: '1rem' }}
+            onChange={(e) => setPublicAddress(e.target.value.trim())}
+            style={{ width: '100%', padding: '0.8rem', marginBottom: '1rem' }}
           />
-          <button onClick={register}>Register Passkey</button>
-          <button onClick={login} style={{ marginLeft: '1rem' }}>Login</button>
+          <button onClick={register} disabled={loading}>
+            {loading ? 'Registering...' : 'Register Passkey'}
+          </button>
+          <button onClick={login} disabled={loading} style={{ marginLeft: '1rem' }}>
+            {loading ? 'Logging in...' : 'Login'}
+          </button>
         </div>
       ) : (
         <>
           <h2>Balances</h2>
-          <ul>
-            {Object.entries(balances).map(([k, v]) => (
-              <li key={k}>{k}: {v}</li>
-            ))}
-          </ul>
+          {loading ? <p>Loading...</p> : (
+            <ul>
+              {Object.entries(balances).map(([k, v]) => (
+                <li key={k}>{k}: {v}</li>
+              ))}
+            </ul>
+          )}
 
-          <h3>Deposits</h3>
+          <h3>Recent Deposits</h3>
           <ul>
             {notifications.map((n, i) => (
               <li key={i}>+ {n.amount} {n.token} ({n.chain})</li>
@@ -169,10 +197,12 @@ function App() {
               <option>XDC</option>
               <option>FLR</option>
             </select>
-            <button type="submit">Withdraw</button>
+            <button type="submit" disabled={loading}>
+              {loading ? 'Processing...' : 'Withdraw'}
+            </button>
           </form>
 
-          <button onClick={() => { localStorage.removeItem('token'); setToken(''); }}>
+          <button onClick={logout} style={{ marginTop: '2rem', color: 'red' }}>
             Logout
           </button>
         </>
