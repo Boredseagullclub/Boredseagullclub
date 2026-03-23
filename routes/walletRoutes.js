@@ -148,4 +148,10 @@ router.post(
   }
 );
 
+// routes/walletRoutes.js
+router.get('/balances', authenticateJWT, async (req, res) => {
+  const user = await User.findById(req.user.userId);
+  res.json({ balances: Object.fromEntries(user.balances || {}) });
+});
+
 module.exports = router;
