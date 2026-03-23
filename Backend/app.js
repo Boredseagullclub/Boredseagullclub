@@ -151,6 +151,9 @@ const start = async () => {
 
     // 3. Blockchain services
     await startXrplListener();
+    await startStellarListener();     // from services/stellarListener.js
+    await startHederaListener();      // from wherever Hedera listener lives
+    await startEvmListeners();        // from listeners/evmListener.js
 
     // 4. Background tasks
     cron.schedule('0 * * * *', async () => {
