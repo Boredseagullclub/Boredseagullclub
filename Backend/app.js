@@ -15,9 +15,13 @@ const logger = require('./utils/logger');
 const { performFullAudit } = require('./reconciler');
 const { runConfirmationCycle } = require('./services/ConfirmationEngine');
 const { startXrplListener, getSyncStatus } = require('./xrplListener');
+const { startStellarListener } = require('./services/stellarListener');   // ← fixed import
+const { startHederaListener } = require('./services/hederaListener');     // ← add this file if missing
+const { startEvmListeners } = require('./listeners/evmListener');         // ← fixed import
+
 const { initSocket } = require('./services/socketService');
 
-// Prometheus
+// ====================== Prometheus ======================
 const register = new prom.Registry();
 prom.collectDefaultMetrics({ register });
 
@@ -49,11 +53,12 @@ let lastAuditStatus = 'UNKNOWN';
 let lastAuditTime = null;
 let maintenanceMode = false;
 
-// Critical env check
+// ====================== Critical Env Check ======================
 const criticalEnvVars = [
   'MONGO_URI', 'XRP_HOT_WALLET_SEED', 'XDC_HOT_WALLET_KEY',
   'FLR_HOT_WALLET_KEY', 'XLM_HOT_WALLET_SECRET', 'HBAR_HOT_WALLET_KEY',
-  'ADMIN_SECRET', 'JWT_SECRET', 'RP_ID', 'FRONTEND_URL'
+  'ADMIN_SECRET', 'JWT_SECRET', 'RP_ID', 'FRONTEND_URL', 'PORT',
+  'REDIS_URL'                    // ← important for BullMQ
 ];
 
 criticalEnvVars.forEach(key => {
@@ -63,13 +68,18 @@ criticalEnvVars.forEach(key => {
   }
 });
 
-// App setup
+// ====================== App Setup ======================
 const app = express();
+const PORT = process.env.PORT || 5000;   // ← FIXED: was undefined
+
 app.use(helmet({ contentSecurityPolicy: false }));
-app.use(cors({ origin: process.env.FRONTEND_URL, credentials: true }));
+app.use(cors({ 
+  origin: process.env.FRONTEND_URL, 
+  credentials: true 
+}));
 app.use(bodyParser.json());
 
-// Rate limit auth routes
+// Rate limiter for auth
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 20,
@@ -83,7 +93,7 @@ app.use('/api/wallet', walletRoutes);
 app.use('/api/auth', authLimiter, authRoutes);
 app.use(express.static(path.join(__dirname, 'client/build')));
 
-// Admin auth middleware
+// Admin middleware
 const adminAuth = (req, res, next) => {
   if (req.headers['x-admin-key'] !== process.env.ADMIN_SECRET) {
     logger.warn({ event: 'unauthorized_admin_attempt', ip: req.ip });
@@ -132,12 +142,12 @@ app.post('/admin/audit', adminAuth, async (req, res) => {
   }
 });
 
-// SPA catch-all
+// SPA catch-all (important for React Router)
 app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, 'client/build', 'index.html'));
 });
 
-// ─── Boot Sequence ──────────────────────────────────────────────────────
+// ====================== Boot Sequence ======================
 const start = async () => {
   try {
     // 1. Database
@@ -148,12 +158,13 @@ const start = async () => {
     const report = await performFullAudit();
     lastAuditStatus = report.overallStatus;
     lastAuditStatusGauge.set(report.overallStatus === 'SOLVENT' ? 1 : 0);
+    lastAuditTime = new Date();
 
-    // 3. Blockchain services
+    // 3. Blockchain listeners
     await startXrplListener();
-    await startStellarListener();     // from services/stellarListener.js
-    await startHederaListener();      // from wherever Hedera listener lives
-    await startEvmListeners();        // from listeners/evmListener.js
+    await startStellarListener();     // ← now properly imported
+    await startHederaListener();      // ← make sure this file exists
+    await startEvmListeners();        // ← fixed
 
     // 4. Background tasks
     cron.schedule('0 * * * *', async () => {
@@ -161,16 +172,21 @@ const start = async () => {
       try {
         const r = await performFullAudit();
         lastAuditStatusGauge.set(r.overallStatus === 'SOLVENT' ? 1 : 0);
+        lastAuditTime = new Date();
       } catch (e) {
         logger.error({ module: 'AuditCron', error: e.message });
       }
     });
 
     setInterval(() => {
-      if (!maintenanceMode) runConfirmationCycle().catch(e => logger.error({ module: 'DepositEngine', error: e.message }));
+      if (!maintenanceMode) {
+        runConfirmationCycle().catch(e => 
+          logger.error({ module: 'DepositEngine', error: e.message })
+        );
+      }
     }, 10000);
 
-    // 5. Start server
+    // 5. Start server + Socket.IO
     const server = app.listen(PORT, () => {
       logger.info({ event: 'server_listening', port: PORT });
     });
@@ -186,7 +202,7 @@ const start = async () => {
 
 start();
 
-// ─── Graceful Shutdown ──────────────────────────────────────────────────
+// ====================== Graceful Shutdown ======================
 const shutdown = async (signal) => {
   logger.info({ event: 'shutdown_initiated', signal });
   maintenanceMode = true;
