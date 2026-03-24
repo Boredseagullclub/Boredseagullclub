@@ -1,4 +1,5 @@
 require('dotenv').config();
+
 const express = require('express');
 const bodyParser = require('body-parser');
 const helmet = require('helmet');
@@ -18,7 +19,6 @@ const { startXrplListener, getSyncStatus } = require('./xrplListener');
 const { startStellarListener } = require('./services/stellarListener');
 const { startHederaListener } = require('./services/hederaListener');
 const { startEvmListeners } = require('./listeners/evmListener');
-
 const { initSocket } = require('./services/socketService');
 
 // ====================== Prometheus ======================
@@ -80,10 +80,7 @@ const app = express();
 const PORT = process.env.PORT || 5000;
 
 app.use(helmet({ contentSecurityPolicy: false }));
-app.use(cors({ 
-  origin: process.env.FRONTEND_URL, 
-  credentials: true 
-}));
+app.use(cors({ origin: process.env.FRONTEND_URL, credentials: true }));
 app.use(bodyParser.json());
 
 // Rate limiter for auth
@@ -173,7 +170,7 @@ const start = async () => {
     await startHederaListener();
     await startEvmListeners();
 
-    // 4. Background tasks — MongoDB only (no Redis/BullMQ)
+    // 4. Background tasks — MongoDB only
     cron.schedule('0 * * * *', async () => {
       if (maintenanceMode) return;
       try {
@@ -186,7 +183,7 @@ const start = async () => {
       }
     });
 
-    // Simple deposit confirmation + credit loop (every 10 seconds)
+    // Simple deposit processing loop
     setInterval(() => {
       if (!maintenanceMode) {
         runConfirmationCycle().catch(e => 
