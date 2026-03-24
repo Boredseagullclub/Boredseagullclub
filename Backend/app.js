@@ -15,9 +15,9 @@ const logger = require('./utils/logger');
 const { performFullAudit } = require('./reconciler');
 const { runConfirmationCycle } = require('./services/ConfirmationEngine');
 const { startXrplListener, getSyncStatus } = require('./xrplListener');
-const { startStellarListener } = require('./services/stellarListener');   // ← fixed import
-const { startHederaListener } = require('./services/hederaListener');     // ← add this file if missing
-const { startEvmListeners } = require('./listeners/evmListener');         // ← fixed import
+const { startStellarListener } = require('./services/stellarListener');
+const { startHederaListener } = require('./services/hederaListener');
+const { startEvmListeners } = require('./listeners/evmListener');
 
 const { initSocket } = require('./services/socketService');
 
@@ -55,10 +55,17 @@ let maintenanceMode = false;
 
 // ====================== Critical Env Check ======================
 const criticalEnvVars = [
-  'MONGO_URI', 'XRP_HOT_WALLET_SEED', 'XDC_HOT_WALLET_KEY',
-  'FLR_HOT_WALLET_KEY', 'XLM_HOT_WALLET_SECRET', 'HBAR_HOT_WALLET_KEY',
-  'ADMIN_SECRET', 'JWT_SECRET', 'RP_ID', 'FRONTEND_URL', 'PORT',
-  'REDIS_URL'                    // ← important for BullMQ
+  'MONGO_URI', 
+  'XRP_HOT_WALLET_SEED', 
+  'XDC_HOT_WALLET_KEY',
+  'FLR_HOT_WALLET_KEY', 
+  'XLM_HOT_WALLET_SECRET', 
+  'HBAR_HOT_WALLET_KEY',
+  'ADMIN_SECRET', 
+  'JWT_SECRET', 
+  'RP_ID', 
+  'FRONTEND_URL',
+  'PORT'
 ];
 
 criticalEnvVars.forEach(key => {
@@ -70,7 +77,7 @@ criticalEnvVars.forEach(key => {
 
 // ====================== App Setup ======================
 const app = express();
-const PORT = process.env.PORT || 5000;   // ← FIXED: was undefined
+const PORT = process.env.PORT || 5000;
 
 app.use(helmet({ contentSecurityPolicy: false }));
 app.use(cors({ 
@@ -142,7 +149,7 @@ app.post('/admin/audit', adminAuth, async (req, res) => {
   }
 });
 
-// SPA catch-all (important for React Router)
+// SPA catch-all
 app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, 'client/build', 'index.html'));
 });
@@ -162,15 +169,16 @@ const start = async () => {
 
     // 3. Blockchain listeners
     await startXrplListener();
-    await startStellarListener();     // ← now properly imported
-    await startHederaListener();      // ← make sure this file exists
-    await startEvmListeners();        // ← fixed
+    await startStellarListener();
+    await startHederaListener();
+    await startEvmListeners();
 
-    // 4. Background tasks
+    // 4. Background tasks — MongoDB only (no Redis/BullMQ)
     cron.schedule('0 * * * *', async () => {
       if (maintenanceMode) return;
       try {
         const r = await performFullAudit();
+        lastAuditStatus = r.overallStatus;
         lastAuditStatusGauge.set(r.overallStatus === 'SOLVENT' ? 1 : 0);
         lastAuditTime = new Date();
       } catch (e) {
@@ -178,6 +186,7 @@ const start = async () => {
       }
     });
 
+    // Simple deposit confirmation + credit loop (every 10 seconds)
     setInterval(() => {
       if (!maintenanceMode) {
         runConfirmationCycle().catch(e => 
