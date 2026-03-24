@@ -16,10 +16,10 @@ const logger = require('./utils/logger');
 const { performFullAudit } = require('./reconciler');
 const { runConfirmationCycle } = require('./services/ConfirmationEngine');
 const { startXrplListener, getSyncStatus } = require('./xrplListener');
-const { startStellarListener } = require('./services/stellarListener');
-const { startHederaListener } = require('./services/hederaListener');
-const { startEvmListeners } = require('./listeners/evmListener');
-const { initSocket } = require('./services/socketService');
+const { startStellarListener } = require('./stellarListener');
+const { startHederaListener } = require('./hederaListener');
+const { startEvmListeners } = require('./evmListener');
+const { initSocket } = require('./socketService');
 
 // ====================== Prometheus ======================
 const register = new prom.Registry();
