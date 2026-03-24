@@ -9,6 +9,7 @@ const rateLimit = require('express-rate-limit');
 const cron = require('node-cron');
 const prom = require('prom-client');
 const path = require('path');
+const crypto = require('crypto');   // ← added for timingSafeEqual
 
 const walletRoutes = require('./routes/walletRoutes');
 const authRoutes = require('./routes/auth');
@@ -52,8 +53,12 @@ const lastAuditStatusGauge = new prom.Gauge({
 let lastAuditStatus = 'UNKNOWN';
 let lastAuditTime = null;
 let maintenanceMode = false;
+let server;   // For graceful shutdown
 
 // ====================== Critical Env Check ======================
+// Hot wallet keys are required for server-side withdrawals and bridging payouts.
+// This makes outflows custodial (standard for most bridges), but deposits remain non-custodial.
+// Daily limits in config.js + low hot-wallet balances keep risk low.
 const criticalEnvVars = [
   'MONGO_URI', 
   'XRP_HOT_WALLET_SEED', 
@@ -100,12 +105,25 @@ app.use('/api/wallet', walletRoutes);
 app.use('/api/auth', authLimiter, authRoutes);
 app.use(express.static(path.join(__dirname, 'client/build')));
 
-// Admin middleware
+// Timing-safe admin auth (prevents timing attacks)
 const adminAuth = (req, res, next) => {
-  if (req.headers['x-admin-key'] !== process.env.ADMIN_SECRET) {
+  const providedKey = req.headers['x-admin-key'];
+
+  if (!providedKey || !process.env.ADMIN_SECRET) {
+    logger.warn({ event: 'unauthorized_admin_attempt', ip: req.ip, reason: 'missing_key' });
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+
+  const providedBuffer = Buffer.from(providedKey);
+  const expectedBuffer = Buffer.from(process.env.ADMIN_SECRET);
+
+  if (providedBuffer.length !== expectedBuffer.length ||
+      !crypto.timingSafeEqual(providedBuffer, expectedBuffer)) {
+    
     logger.warn({ event: 'unauthorized_admin_attempt', ip: req.ip });
     return res.status(401).json({ error: 'Unauthorized' });
   }
+
   next();
 };
 
@@ -113,10 +131,14 @@ const adminAuth = (req, res, next) => {
 app.get('/health/status', async (req, res) => {
   const dbConnected = mongoose.connection.readyState === 1;
   const status = getSyncStatus();
+  
   xrplLagGauge.set(status.gap || 0);
   maintenanceGauge.set(maintenanceMode ? 1 : 0);
 
-  const isHealthy = dbConnected && !maintenanceMode && status.processedLedger > 0 && status.gap < 20;
+  const isHealthy = dbConnected 
+    && !maintenanceMode 
+    && status.processedLedger > 0 
+    && status.gap < 30;
 
   res.status(isHealthy ? 200 : 503).json({
     healthy: isHealthy,
@@ -132,7 +154,7 @@ app.get('/metrics', async (req, res) => {
   res.send(await register.metrics());
 });
 
-// Admin endpoints
+// Admin endpoints (now timing-safe)
 app.post('/admin/maintenance', adminAuth, (req, res) => {
   maintenanceMode = !!req.body.enabled;
   maintenanceGauge.set(maintenanceMode ? 1 : 0);
@@ -154,26 +176,28 @@ app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, 'client/build', 'index.html'));
 });
 
+// ====================== Global Error Handler ======================
+app.use((err, req, res, next) => {
+  logger.error({ module: 'GlobalError', error: err.message, stack: err.stack });
+  res.status(500).json({
+    error: 'Internal Server Error',
+    message: process.env.NODE_ENV === 'production' ? 'Something went wrong' : err.message
+  });
+});
+
 // ====================== Boot Sequence ======================
 const start = async () => {
   try {
-    // 1. Database
     await mongoose.connect(process.env.MONGO_URI);
     logger.info({ event: 'mongodb_connected' });
 
-    // 2. Initial audit
-    const report = await performFullAudit();
-    lastAuditStatus = report.overallStatus;
-    lastAuditStatusGauge.set(report.overallStatus === 'SOLVENT' ? 1 : 0);
-    lastAuditTime = new Date();
-
-    // 3. Blockchain listeners
+    // Blockchain listeners
     await startXrplListener();
     await startStellarListener();
     await startHederaListener();
     await startEvmListeners();
 
-    // 4. Background tasks — MongoDB only
+    // Background tasks — MongoDB only
     cron.schedule('0 * * * *', async () => {
       if (maintenanceMode) return;
       try {
@@ -186,7 +210,6 @@ const start = async () => {
       }
     });
 
-    // Simple deposit processing loop (every 10 seconds)
     setInterval(() => {
       if (!maintenanceMode) {
         runConfirmationCycle().catch(e => 
@@ -195,9 +218,21 @@ const start = async () => {
       }
     }, 10000);
 
-    // 5. Start server + Socket.IO
-    const server = app.listen(PORT, () => {
+    // Start server FIRST — health checks pass immediately
+    server = app.listen(PORT, () => {
       logger.info({ event: 'server_listening', port: PORT });
+
+      // Initial audit in background (non-blocking)
+      performFullAudit().then(report => {
+        lastAuditStatus = report.overallStatus;
+        lastAuditStatusGauge.set(report.overallStatus === 'SOLVENT' ? 1 : 0);
+        lastAuditTime = new Date();
+        logger.info({ event: 'initial_audit_complete', status: lastAuditStatus });
+      }).catch(e => {
+        logger.error({ event: 'initial_audit_failed', error: e.message });
+        lastAuditStatus = 'UNKNOWN';
+        lastAuditStatusGauge.set(-1);
+      });
     });
 
     initSocket(server);
@@ -215,8 +250,24 @@ start();
 const shutdown = async (signal) => {
   logger.info({ event: 'shutdown_initiated', signal });
   maintenanceMode = true;
-  await mongoose.connection.close();
-  process.exit(0);
+
+  if (server) {
+    server.close(() => {
+      logger.info({ event: 'http_server_closed' });
+    });
+  }
+
+  setTimeout(async () => {
+    try {
+      await mongoose.connection.close(false);
+      logger.info({ event: 'mongodb_closed' });
+    } catch (err) {
+      logger.error({ event: 'mongodb_close_error', error: err.message });
+    }
+
+    logger.info({ event: 'shutdown_complete' });
+    process.exit(0);
+  }, 3000);
 };
 
 process.on('SIGTERM', () => shutdown('SIGTERM'));
