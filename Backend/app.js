@@ -80,7 +80,10 @@ const app = express();
 const PORT = process.env.PORT || 5000;
 
 app.use(helmet({ contentSecurityPolicy: false }));
-app.use(cors({ origin: process.env.FRONTEND_URL, credentials: true }));
+app.use(cors({ 
+  origin: process.env.FRONTEND_URL, 
+  credentials: true 
+}));
 app.use(bodyParser.json());
 
 // Rate limiter for auth
@@ -183,7 +186,7 @@ const start = async () => {
       }
     });
 
-    // Simple deposit processing loop
+    // Simple deposit processing loop (every 10 seconds)
     setInterval(() => {
       if (!maintenanceMode) {
         runConfirmationCycle().catch(e => 
