@@ -42,7 +42,8 @@ async function performFullAudit() {
 
 
     report.liabilities = dbAgg.reduce((acc, { _id, totalOwed }) => {
-      acc[_id] = new Decimal(totalOwed || 0);
+      // .toString() ensures Decimal.js parses the MongoDB Decimal128 perfectly
+      acc[_id] = new Decimal(totalOwed ? totalOwed.toString() : 0);
       return acc;
     }, {});
 
