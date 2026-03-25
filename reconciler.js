@@ -105,6 +105,8 @@ async function performFullAudit() {
       errorCount: report.errors.length,
     });
 
+    updateLastAuditResult(report);
+
     return report;
   } catch (err) {
     logger.error({
