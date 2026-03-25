@@ -230,7 +230,7 @@ const shutdown = async (signal) => {
 
     logger.info({ event: 'shutdown_complete' });
     process.exit(0);
-  }, 6000);
+  }, 8000);
 };
 
 process.on('SIGTERM', () => shutdown('SIGTERM'));
