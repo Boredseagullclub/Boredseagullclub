@@ -1,12 +1,48 @@
-// config.js  (improved version of your first one)
+// config.js
 module.exports = {
   CHAINS: {
-    XRP: { type: "XRPL", nativeSymbol: "XRP", decimals: 6, atomicUnit: "drops" },
-    XDC: { type: "EVM",  nativeSymbol: "XDC", decimals: 18, atomicUnit: "wei" },
-    FLR: { type: "EVM",  nativeSymbol: "FLR", decimals: 18, atomicUnit: "wei" },
-    XLM: { type: "STELLAR", nativeSymbol: "XLM", decimals: 7, atomicUnit: "stroops" },
-    HBAR: { type: "HEDERA", nativeSymbol: "HBAR", decimals: 8, atomicUnit: "tinybar" },
-    ALGO: { type: "ALGORAND", nativeSymbol: "ALGO", decimals: 6, atomicUnit: "microalgo" }
+    XRP: { 
+      type: "XRPL", 
+      nativeSymbol: "XRP", 
+      decimals: 6, 
+      atomicUnit: "drops",
+      rpcUrl: process.env.XRPL_WS_URL || "wss://xrplcluster.com" 
+    },
+    XDC: { 
+      type: "EVM",  
+      nativeSymbol: "XDC", 
+      decimals: 18, 
+      atomicUnit: "wei",
+      rpcUrl: process.env.XDC_RPC_URL 
+    },
+    FLR: { 
+      type: "EVM",  
+      nativeSymbol: "FLR", 
+      decimals: 18, 
+      atomicUnit: "wei",
+      rpcUrl: process.env.FLR_RPC_URL 
+    },
+    XLM: { 
+      type: "STELLAR", 
+      nativeSymbol: "XLM", 
+      decimals: 7, 
+      atomicUnit: "stroops",
+      rpcUrl: process.env.STELLAR_HORIZON_URL || "https://horizon.stellar.org"
+    },
+    HBAR: { 
+      type: "HEDERA", 
+      nativeSymbol: "HBAR", 
+      decimals: 8, 
+      atomicUnit: "tinybar"
+      // Hedera uses SDK client, not standard RPC, so rpcUrl is optional
+    },
+    ALGO: { 
+      type: "ALGORAND", 
+      nativeSymbol: "ALGO", 
+      decimals: 6, 
+      atomicUnit: "microalgo",
+      rpcUrl: process.env.ALGO_NODE_URL
+    }
   },
 
   TOKENS: {
@@ -29,14 +65,15 @@ module.exports = {
     }
   },
 
-  DAILY_LIMITS: {  // ← Add this for quotaGuard
+  DAILY_LIMITS: { 
     XRP: "10000",
     XDC: "5000",
     FLR: "5000",
     XLM: "10000",
     HBAR: "10000",
+    ALGO: "5000",
     SEAGULLCOIN: "250000",
-      SEAGULLCASH: "1000000"
+    SEAGULLCASH: "1000000"
   },
 
   FEES: {
