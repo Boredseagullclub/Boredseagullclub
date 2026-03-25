@@ -137,48 +137,50 @@ async function getVerifiedOnChainBalances() {
     throw new Error('Missing config for reconciler');
   }
 
-      // ─── XRPL ───────────────────────────────────────────────────────────────
-const xrpl = new XrplClient(process.env.XRPL_WS_URL || 'wss://xrplcluster.com');
-try {
-  await xrpl.connect();
+  // ─── XRPL ───────────────────────────────────────────────────────────────
+  const xrpl = new XrplClient(process.env.XRPL_WS_URL || 'wss://xrplcluster.com');
+  try {
+    await xrpl.connect();
 
-  // 1. Native XRP balance
-  const accountInfo = await xrpl.request({
-    command: 'account_info',
-    account: process.env.XRPL_DEPOSIT_ADDRESS,
-    ledger_index: 'validated'
-  });
-  const xrpBalance = new Decimal(accountInfo.result.account_data.Balance).div(1_000_000);
-  balances.XRP = xrpBalance;
+    // 1. Native XRP balance
+    const accountInfo = await xrpl.request({
+      command: 'account_info',
+      account: process.env.XRPL_DEPOSIT_ADDRESS,
+      ledger_index: 'validated'
+    });
+    const xrpBalance = new Decimal(accountInfo.result.account_data.Balance).div(1_000_000);
+    balances.XRP = xrpBalance;
 
-  // 2. INSERT THE NEW CODE HERE: Issued tokens via trust lines
-  const accountLines = await xrpl.request({
-    command: 'account_lines',
-    account: process.env.XRPL_DEPOSIT_ADDRESS,
-    ledger_index: 'validated'
-  });
+    // 2. Issued tokens via trust lines (SEAGULLCOIN, SEAGULLCASH, etc.)
+    const accountLines = await xrpl.request({
+      command: 'account_lines',
+      account: process.env.XRPL_DEPOSIT_ADDRESS,
+      ledger_index: 'validated'
+    });
 
-  accountLines.result.lines.forEach(line => {
-    // Check if this trust line matches a token in our config
-    const tokenEntry = Object.entries(config.TOKENS).find(([_, spec]) => 
-      spec.networks?.XRP?.issuer === line.account && spec.symbol === line.currency
-    );
+    accountLines.result.lines.forEach(line => {
+      const tokenEntry = Object.entries(config.TOKENS).find(([tokenName, spec]) => 
+        spec.networks?.XRP?.issuer === line.account
+      );
 
-    if (tokenEntry) {
-      const [tokenName] = tokenEntry;
-      // line.balance is a string from XRPL, wrap it in Decimal
-      balances[tokenName] = new Decimal(line.balance);
-    }
-  });
+      if (tokenEntry) {
+        const [tokenName] = tokenEntry;
+        balances[tokenName] = new Decimal(line.balance).abs();
+        logger.info({ 
+          module: 'Reconciler', 
+          event: 'trust_line_found', 
+          token: tokenName, 
+          balance: line.balance 
+        });
+      }
+    });
 
-} catch (err) {
-  errors.push({ chain: 'XRPL', error: err.message });
-  logger.error({ module: 'Reconciler', chain: 'XRPL', error: err.message });
-} finally {
-  if (xrpl.isConnected()) await xrpl.disconnect();
-}
-
-
+  } catch (err) {
+    errors.push({ chain: 'XRPL', error: err.message });
+    logger.error({ module: 'Reconciler', chain: 'XRPL', error: err.message });
+  } finally {
+    if (xrpl.isConnected()) await xrpl.disconnect();
+  }
   // ─── Stellar ────────────────────────────────────────────────────────────
   try {
     const stellar = new StellarSdk.Server(process.env.STELLAR_HORIZON_URL);
