@@ -1,4 +1,4 @@
-// ====================== app.js (CLEAN & CONSOLIDATED) ======================
+// ====================== app.js (FINAL - NO EXTRA MIDDLEWARE FILES) ======================
 require('dotenv').config();
 
 const express = require('express');
@@ -11,10 +11,11 @@ const cron = require('node-cron');
 const prom = require('prom-client');
 const path = require('path');
 const crypto = require('crypto');
+const jwt = require('jsonwebtoken');
 
 const walletRoutes = require('./routes/walletRoutes');
 const authRoutes = require('./routes/auth');
-const logger = require('./utils/logger');                    // ← single pino logger
+const logger = require('./utils/logger');
 const { performFullAudit } = require('./services/reconciler');
 const { runConfirmationCycle } = require('./services/ConfirmationEngine');
 const { startXrplListener, getSyncStatus } = require('./xrplListener');
@@ -24,6 +25,9 @@ const { startEvmListeners } = require('./evmListener');
 const { initSocket } = require('./socketService');
 const solvencyGuard = require('./middleware/solvencyGuard');
 const validateAddress = require('./middleware/validateAddress');
+
+const app = express();
+const PORT = process.env.PORT || 5000;
 
 // ====================== Prometheus ======================
 const register = new prom.Registry();
@@ -35,36 +39,17 @@ const passkeySuccessCounter = new prom.Counter({
   registers: [register],
 });
 
-const maintenanceGauge = new prom.Gauge({
-  name: 'seagull_maintenance_mode',
-  help: '1 if maintenance mode is enabled',
-  registers: [register],
-});
-
-const xrplLagGauge = new prom.Gauge({
-  name: 'seagull_xrpl_ledger_lag',
-  help: 'Current XRPL ledger gap',
-  registers: [register],
-});
-
-const lastAuditStatusGauge = new prom.Gauge({
-  name: 'seagull_last_audit_status',
-  help: '1 = SOLVENT, 0 = DEFICIT, -1 = FAILED',
-  registers: [register],
-});
+const maintenanceGauge = new prom.Gauge({ name: 'seagull_maintenance_mode', help: '1 if maintenance mode enabled', registers: [register] });
+const xrplLagGauge = new prom.Gauge({ name: 'seagull_xrpl_ledger_lag', help: 'Current XRPL ledger gap', registers: [register] });
+const lastAuditStatusGauge = new prom.Gauge({ name: 'seagull_last_audit_status', help: '1=SOLVENT, 0=DEFICIT, -1=FAILED', registers: [register] });
 
 let lastAuditStatus = 'UNKNOWN';
 let lastAuditTime = null;
 let maintenanceMode = false;
 let server;
 
-// ====================== Critical Env Check ======================
-const criticalEnvVars = [
-  'MONGO_URI', 'XRP_HOT_WALLET_SEED', 'XDC_HOT_WALLET_KEY',
-  'FLR_HOT_WALLET_KEY', 'XLM_HOT_WALLET_SECRET', 'HBAR_HOT_WALLET_KEY',
-  'ADMIN_SECRET', 'JWT_SECRET', 'RP_ID', 'FRONTEND_URL', 'PORT'
-];
-
+// Critical env check
+const criticalEnvVars = ['MONGO_URI', 'XRP_HOT_WALLET_SEED', 'XDC_HOT_WALLET_KEY', 'FLR_HOT_WALLET_KEY', 'XLM_HOT_WALLET_SECRET', 'HBAR_HOT_WALLET_KEY', 'ADMIN_SECRET', 'JWT_SECRET', 'RP_ID', 'FRONTEND_URL', 'PORT'];
 criticalEnvVars.forEach(key => {
   if (!process.env[key]) {
     logger.fatal({ event: 'missing_critical_env', key });
@@ -72,26 +57,19 @@ criticalEnvVars.forEach(key => {
   }
 });
 
-// ====================== App Setup ======================
-const app = express();
-const PORT = process.env.PORT || 5000;
-
+// Middleware
 app.use(helmet({ contentSecurityPolicy: false }));
 app.use(cors({ origin: process.env.FRONTEND_URL, credentials: true }));
 app.use(bodyParser.json());
 
-// Rate limiters
 const authLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 20, message: { error: 'Too many auth attempts' } });
 
-// ====================== MISSING MIDDLEWARE (added) ======================
-// authenticateJWT
+// JWT Auth (defined here so routes can use it without extra files)
 const authenticateJWT = (req, res, next) => {
   const authHeader = req.headers.authorization;
-  if (!authHeader?.startsWith('Bearer ')) {
-    return res.status(401).json({ error: 'No token provided' });
-  }
+  if (!authHeader?.startsWith('Bearer ')) return res.status(401).json({ error: 'No token provided' });
   try {
-    const decoded = require('jsonwebtoken').verify(authHeader.split(' ')[1], process.env.JWT_SECRET);
+    const decoded = jwt.verify(authHeader.split(' ')[1], process.env.JWT_SECRET);
     req.user = decoded;
     next();
   } catch (err) {
@@ -100,26 +78,21 @@ const authenticateJWT = (req, res, next) => {
   }
 };
 
-// ====================== Routes ======================
+// Routes
 app.use('/api/wallet', walletRoutes);
 app.use('/api/auth', authLimiter, authRoutes);
 app.use(express.static(path.join(__dirname, 'client/build')));
 
-// Admin middleware (timing-safe)
+// Admin auth
 const adminAuth = (req, res, next) => {
-  const providedKey = String(req.headers['x-admin-key'] || '');
-  const expectedKey = String(process.env.ADMIN_SECRET || '');
-
-  if (!providedKey || !expectedKey) return res.status(401).json({ error: 'Unauthorized' });
-
-  const providedBuffer = Buffer.from(providedKey);
-  const expectedBuffer = Buffer.from(expectedKey);
-
-  if (providedBuffer.length === expectedBuffer.length && crypto.timingSafeEqual(providedBuffer, expectedBuffer)) {
-    return next();
-  }
+  const provided = String(req.headers['x-admin-key'] || '');
+  const expected = String(process.env.ADMIN_SECRET || '');
+  if (!provided || !expected) return res.status(401).json({ error: 'Unauthorized' });
+  const pBuf = Buffer.from(provided);
+  const eBuf = Buffer.from(expected);
+  if (pBuf.length === eBuf.length && crypto.timingSafeEqual(pBuf, eBuf)) return next();
   logger.warn({ event: 'unauthorized_admin_attempt', ip: req.ip });
-  return res.status(401).json({ error: 'Unauthorized' });
+  res.status(401).json({ error: 'Unauthorized' });
 };
 
 // Health & metrics
@@ -130,7 +103,6 @@ app.get('/health/status', async (req, res) => {
   maintenanceGauge.set(maintenanceMode ? 1 : 0);
 
   const isHealthy = dbConnected && !maintenanceMode && status.processedLedger > 0 && status.gap < 30;
-
   res.status(isHealthy ? 200 : 503).json({
     healthy: isHealthy,
     dbConnected,
@@ -145,7 +117,7 @@ app.get('/metrics', async (req, res) => {
   res.send(await register.metrics());
 });
 
-// Admin endpoints
+// Admin routes
 app.post('/admin/maintenance', adminAuth, (req, res) => {
   maintenanceMode = !!req.body.enabled;
   maintenanceGauge.set(maintenanceMode ? 1 : 0);
@@ -162,18 +134,14 @@ app.post('/admin/audit', adminAuth, async (req, res) => {
   }
 });
 
-// ====================== SPA ======================
-app.get('*', (req, res) => {
-  res.sendFile(path.join(__dirname, 'client/build', 'index.html'));
-});
+app.get('*', (req, res) => res.sendFile(path.join(__dirname, 'client/build', 'index.html')));
 
-// ====================== Global Error Handler ======================
 app.use((err, req, res, next) => {
   logger.error({ module: 'GlobalError', error: err.message, stack: err.stack });
   res.status(500).json({ error: 'Internal Server Error' });
 });
 
-// ====================== Boot Sequence ======================
+// Boot
 const start = async () => {
   try {
     await mongoose.connect(process.env.MONGO_URI);
@@ -184,7 +152,6 @@ const start = async () => {
     await startHederaListener();
     await startEvmListeners();
 
-    // Cron audit
     cron.schedule('0 * * * *', async () => {
       if (maintenanceMode) return;
       try {
@@ -197,7 +164,6 @@ const start = async () => {
       }
     });
 
-    // Deposit confirmation cycle
     setInterval(() => {
       if (!maintenanceMode) runConfirmationCycle().catch(e => logger.error({ module: 'DepositEngine', error: e.message }));
     }, 10000);
@@ -221,7 +187,7 @@ const start = async () => {
 
 start();
 
-// ====================== Graceful Shutdown ======================
+// Graceful shutdown
 const shutdown = async (signal) => {
   logger.info({ event: 'shutdown_initiated', signal });
   maintenanceMode = true;
@@ -237,5 +203,4 @@ process.on('SIGTERM', () => shutdown('SIGTERM'));
 process.on('SIGINT', () => shutdown('SIGINT'));
 process.on('unhandledRejection', (reason) => logger.error({ event: 'unhandled_rejection', reason }));
 
-// ====================== NOTE ON NUMBER HANDLING ======================
-// Use decimal.js + Decimal128 everywhere (no BigInt / Number mixing in DB ops)
+// Use decimal.js + Decimal128 for all amounts
