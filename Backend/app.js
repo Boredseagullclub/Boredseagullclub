@@ -105,28 +105,31 @@ app.use('/api/wallet', walletRoutes);
 app.use('/api/auth', authLimiter, authRoutes);
 app.use(express.static(path.join(__dirname, 'client/build')));
 
-// Timing-safe admin auth (prevents timing attacks)
+// Admin middleware (Hardened: Timing-safe & Type-safe)
 const adminAuth = (req, res, next) => {
-  const providedKey = req.headers['x-admin-key'];
+  // Force to string to prevent Buffer errors if non-string is sent
+  const providedKey = String(req.headers['x-admin-key'] || '');
+  const expectedKey = String(process.env.ADMIN_SECRET || '');
 
-  if (!providedKey || !process.env.ADMIN_SECRET) {
+  if (!providedKey || !expectedKey) {
     logger.warn({ event: 'unauthorized_admin_attempt', ip: req.ip, reason: 'missing_key' });
     return res.status(401).json({ error: 'Unauthorized' });
   }
 
   const providedBuffer = Buffer.from(providedKey);
-  const expectedBuffer = Buffer.from(process.env.ADMIN_SECRET);
+  const expectedBuffer = Buffer.from(expectedKey);
 
-  if (providedBuffer.length !== expectedBuffer.length ||
-      !crypto.timingSafeEqual(providedBuffer, expectedBuffer)) {
-    
-    logger.warn({ event: 'unauthorized_admin_attempt', ip: req.ip });
-    return res.status(401).json({ error: 'Unauthorized' });
+  // timingSafeEqual requires buffers of exact same length
+  if (providedBuffer.length === expectedBuffer.length && 
+      crypto.timingSafeEqual(providedBuffer, expectedBuffer)) {
+    return next();
   }
 
-  next();
+  logger.warn({ event: 'unauthorized_admin_attempt', ip: req.ip });
+  return res.status(401).json({ error: 'Unauthorized' });
 };
 
+  
 // Health & metrics
 app.get('/health/status', async (req, res) => {
   const dbConnected = mongoose.connection.readyState === 1;
