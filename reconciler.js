@@ -137,21 +137,20 @@ async function getVerifiedOnChainBalances() {
     throw new Error('Missing config for reconciler');
   }
 
-  // ─── XRPL ───────────────────────────────────────────────────────────────
+    // ─── XRPL ───────────────────────────────────────────────────────────────
   const xrpl = new XrplClient(process.env.XRPL_WS_URL || 'wss://xrplcluster.com');
   try {
     await xrpl.connect();
 
-    // 1. Native XRP balance
+    // Native XRP balance
     const accountInfo = await xrpl.request({
       command: 'account_info',
       account: process.env.XRPL_DEPOSIT_ADDRESS,
       ledger_index: 'validated'
     });
-    const xrpBalance = new Decimal(accountInfo.result.account_data.Balance).div(1_000_000);
-    balances.XRP = xrpBalance;
+    balances.XRP = new Decimal(accountInfo.result.account_data.Balance).div(1_000_000);
 
-    // 2. Issued tokens via trust lines (SEAGULLCOIN, SEAGULLCASH, etc.)
+    // Issued tokens via trust lines
     const accountLines = await xrpl.request({
       command: 'account_lines',
       account: process.env.XRPL_DEPOSIT_ADDRESS,
@@ -159,7 +158,7 @@ async function getVerifiedOnChainBalances() {
     });
 
     accountLines.result.lines.forEach(line => {
-      const tokenEntry = Object.entries(config.TOKENS).find(([tokenName, spec]) => 
+      const tokenEntry = Object.entries(config.TOKENS).find(([_, spec]) => 
         spec.networks?.XRP?.issuer === line.account
       );
 
