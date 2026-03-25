@@ -1,10 +1,13 @@
 // middleware/solvencyGuard.js
-const { getLastAuditResult } = require('../services/reconciler'); 
+let lastAuditResult = { overallStatus: 'UNKNOWN' };
+
+// Export this so reconciler can update it after every audit
+function updateLastAuditResult(report) {
+  lastAuditResult = report;
+}
 
 const solvencyGuard = async (req, res, next) => {
-  const audit = getLastAuditResult(); // Should return the cached report from the cron
-  
-  if (!audit || audit.overallStatus !== 'SOLVENT') {
+  if (lastAuditResult.overallStatus !== 'SOLVENT') {
     return res.status(503).json({ 
       error: 'System Maintenance: Outflows are temporarily paused for security auditing.' 
     });
@@ -12,4 +15,4 @@ const solvencyGuard = async (req, res, next) => {
   next();
 };
 
-module.exports = solvencyGuard;
+module.exports = { solvencyGuard, updateLastAuditResult };
