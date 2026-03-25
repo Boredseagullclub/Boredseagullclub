@@ -127,7 +127,7 @@ async function getVerifiedOnChainBalances() {
     throw new Error('Missing config for reconciler');
   }
 
-    // ─── XRPL ───────────────────────────────────────────────────────────────
+      // ─── XRPL ───────────────────────────────────────────────────────────────
   const xrpl = new XrplClient(process.env.XRPL_WS_URL || 'wss://xrplcluster.com');
   try {
     await xrpl.connect();
@@ -141,23 +141,23 @@ async function getVerifiedOnChainBalances() {
     const xrpBalance = new Decimal(accountInfo.result.account_data.Balance).div(1_000_000);
     balances.XRP = xrpBalance;
 
-    // 2. Issued tokens via trust lines (SEAGULLCOIN, etc.)
-    const lines = await xrpl.request({
+    // 2. Issued tokens via trust lines (SEAGULLCOIN, SEAGULLCASH, etc.)
+    const linesResponse = await xrpl.request({
       command: 'account_lines',
       account: process.env.XRPL_DEPOSIT_ADDRESS,
       ledger_index: 'validated'
     });
 
-    lines.result.lines.forEach(line => {
+    linesResponse.result.lines.forEach(line => {
       const tokenEntry = Object.entries(config.TOKENS).find(([tokenName, spec]) => 
-        spec.networks?.XRP?.issuer === line.account && 
-        spec.networks?.XRP?.currency === line.currency   // or spec.symbol if you normalized it
+        spec.networks?.XRP?.issuer === line.account
       );
 
       if (tokenEntry) {
         const [tokenName] = tokenEntry;
-        // XRPL trust line balances are strings, can be negative (for offers), so take absolute or handle carefully
-        balances[tokenName] = new Decimal(line.balance).abs();
+        // XRPL trust lines can be negative in rare cases → take absolute value
+        const balance = new Decimal(line.balance).abs();
+        balances[tokenName] = balance;
       }
     });
 
