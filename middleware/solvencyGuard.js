@@ -1,9 +1,8 @@
 // middleware/solvencyGuard.js
 let lastAuditResult = { overallStatus: 'UNKNOWN' };
 
-// Export this so reconciler can update it after every audit
 function updateLastAuditResult(report) {
-  lastAuditResult = report;
+  lastAuditResult = report || { overallStatus: 'UNKNOWN' };
 }
 
 const solvencyGuard = async (req, res, next) => {
