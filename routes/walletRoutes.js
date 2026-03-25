@@ -66,11 +66,12 @@ router.post('/wallet', async (req, res) => {
 // ────────────────────────────────────────────────
 router.post(
   '/withdraw',
-  authenticateJWT,                    // 1. Must be logged in
-  globalWithdrawLimiter,              // 2. IP-based global
-  perUserWithdrawLimiter,             // 3. Per-user hourly
-  strictWithdrawLimiter,              // 4. Strictest: 5/hour
-  validateAddress,                    // 5. Address validation
+  authenticateJWT,
+  globalWithdrawLimiter,
+  perUserWithdrawLimiter,
+  strictWithdrawLimiter,
+  validateAddress,
+  solvencyGuard,
   async (req, res) => {
     const { token, amount, destination, chain } = req.body;
 
