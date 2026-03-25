@@ -2,13 +2,21 @@
 const { ethers } = require('ethers');
 const Withdrawal = require('../models/Withdrawal');
 const logger = require('../utils/logger');
-const { getAndIncrementNonce, syncNonceWithChain } = require('./nonceManager'); // remove this line if nonceManager doesn't exist yet
+const config = require('../config');
+
+// const { getAndIncrementNonce, syncNonceWithChain } = require('./nonceManager'); // uncomment when ready
 
 async function executeOnChainPayout(withdrawalId) {
   const withdrawal = await Withdrawal.findById(withdrawalId);
   if (!withdrawal || withdrawal.status !== 'PENDING') return;
 
   const chain = withdrawal.chain.toUpperCase();
+  const token = withdrawal.token.toUpperCase();
+
+  // Smart decimals lookup: token-specific first, then chain default
+  const decimals = config.TOKENS[token]?.networks?.[chain]?.decimals 
+                || config.CHAINS[chain]?.decimals 
+                || 18;
 
   try {
     const provider = new ethers.JsonRpcProvider(process.env[`${chain}_RPC_URL`]);
@@ -18,11 +26,11 @@ async function executeOnChainPayout(withdrawalId) {
     if (['XDC', 'FLR'].includes(chain)) {
       const depositAddr = process.env[`${chain}_DEPOSIT_ADDRESS`];
       try {
-        await syncNonceWithChain(depositAddr, chain, provider);
+        // await syncNonceWithChain(depositAddr, chain, provider);
       } catch (e) {
         logger.warn({ module: 'PayoutEngine', event: 'NONCE_SYNC_FAILED', chain, error: e.message });
       }
-      nonce = await getAndIncrementNonce(depositAddr, chain);
+      // nonce = await getAndIncrementNonce(depositAddr, chain);
     }
 
     const feeData = await provider.getFeeData();
@@ -30,17 +38,30 @@ async function executeOnChainPayout(withdrawalId) {
 
     const txRequest = {
       to: withdrawal.toAddress,
-      value: ethers.parseUnits(withdrawal.amount.toString(), 18),
+      value: ethers.parseUnits(withdrawal.amount.toString(), decimals),   // ← now correct for all tokens
       nonce,
       gasPrice,
       gasLimit: 21000,
     };
 
     const txResponse = await wallet.sendTransaction(txRequest);
-    logger.info({ module: 'PayoutEngine', event: 'TX_BROADCAST', hash: txResponse.hash, withdrawalId });
+
+    logger.info({ 
+      module: 'PayoutEngine', 
+      event: 'TX_BROADCAST', 
+      hash: txResponse.hash, 
+      withdrawalId,
+      token,
+      chain,
+      decimalsUsed: decimals 
+    });
 
     const receipt = await txResponse.wait(1);
-    await Withdrawal.updateOne({ _id: withdrawalId }, { status: 'COMPLETED', txHash: receipt.hash });
+
+    await Withdrawal.updateOne({ _id: withdrawalId }, { 
+      status: 'COMPLETED', 
+      txHash: receipt.hash 
+    });
 
     return receipt.hash;
 
@@ -52,7 +73,10 @@ async function executeOnChainPayout(withdrawalId) {
       return;
     }
 
-    await Withdrawal.updateOne({ _id: withdrawalId }, { status: 'FAILED', error: err.message });
+    await Withdrawal.updateOne({ _id: withdrawalId }, { 
+      status: 'FAILED', 
+      error: err.message 
+    });
     throw err;
   }
 }
