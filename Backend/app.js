@@ -1,4 +1,4 @@
-// ====================== app.js (FINAL - NO EXTRA MIDDLEWARE FILES) ======================
+// ====================== app.js - FINAL CLEAN & FIXED ======================
 require('dotenv').config();
 
 const express = require('express');
@@ -29,7 +29,7 @@ const validateAddress = require('./middleware/validateAddress');
 const app = express();
 const PORT = process.env.PORT || 5000;
 
-// ====================== Prometheus ======================
+// Prometheus
 const register = new prom.Registry();
 prom.collectDefaultMetrics({ register });
 
@@ -64,7 +64,7 @@ app.use(bodyParser.json());
 
 const authLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 20, message: { error: 'Too many auth attempts' } });
 
-// JWT Auth (defined here so routes can use it without extra files)
+// JWT Auth
 const authenticateJWT = (req, res, next) => {
   const authHeader = req.headers.authorization;
   if (!authHeader?.startsWith('Bearer ')) return res.status(401).json({ error: 'No token provided' });
@@ -78,25 +78,32 @@ const authenticateJWT = (req, res, next) => {
   }
 };
 
-// === THIS IS THE LINE GEMINI WAS TALKING ABOUT ===
-app.locals.authenticateJWT = authenticateJWT;   // ← Makes it available to all routes
-
+app.locals.authenticateJWT = authenticateJWT;
 
 // Routes
 app.use('/api/wallet', walletRoutes);
 app.use('/api/auth', authLimiter, authRoutes);
 app.use(express.static(path.join(__dirname, 'client/build')));
 
-// Admin auth
+// Timing-safe admin auth
 const adminAuth = (req, res, next) => {
-  const provided = String(req.headers['x-admin-key'] || '');
-  const expected = String(process.env.ADMIN_SECRET || '');
-  if (!provided || !expected) return res.status(401).json({ error: 'Unauthorized' });
-  const pBuf = Buffer.from(provided);
-  const eBuf = Buffer.from(expected);
-  if (pBuf.length === eBuf.length && crypto.timingSafeEqual(pBuf, eBuf)) return next();
+  const providedKey = String(req.headers['x-admin-key'] || '');
+  const expectedKey = String(process.env.ADMIN_SECRET || '');
+
+  if (!providedKey || !expectedKey) {
+    logger.warn({ event: 'unauthorized_admin_attempt', ip: req.ip });
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+
+  const providedBuffer = Buffer.from(providedKey);
+  const expectedBuffer = Buffer.from(expectedKey);
+
+  if (providedBuffer.length === expectedBuffer.length && crypto.timingSafeEqual(providedBuffer, expectedBuffer)) {
+    return next();
+  }
+
   logger.warn({ event: 'unauthorized_admin_attempt', ip: req.ip });
-  res.status(401).json({ error: 'Unauthorized' });
+  return res.status(401).json({ error: 'Unauthorized' });
 };
 
 // Health & metrics
@@ -121,7 +128,7 @@ app.get('/metrics', async (req, res) => {
   res.send(await register.metrics());
 });
 
-// Admin routes
+// Admin endpoints
 app.post('/admin/maintenance', adminAuth, (req, res) => {
   maintenanceMode = !!req.body.enabled;
   maintenanceGauge.set(maintenanceMode ? 1 : 0);
@@ -138,14 +145,16 @@ app.post('/admin/audit', adminAuth, async (req, res) => {
   }
 });
 
+// SPA catch-all
 app.get('*', (req, res) => res.sendFile(path.join(__dirname, 'client/build', 'index.html')));
 
+// Global error handler
 app.use((err, req, res, next) => {
   logger.error({ module: 'GlobalError', error: err.message, stack: err.stack });
   res.status(500).json({ error: 'Internal Server Error' });
 });
 
-// Boot
+// Boot sequence
 const start = async () => {
   try {
     await mongoose.connect(process.env.MONGO_URI);
@@ -178,7 +187,12 @@ const start = async () => {
         lastAuditStatus = report.overallStatus;
         lastAuditStatusGauge.set(report.overallStatus === 'SOLVENT' ? 1 : 0);
         lastAuditTime = new Date();
-      }).catch(e => logger.error({ event: 'initial_audit_failed', error: e.message }));
+        logger.info({ event: 'initial_audit_complete', status: lastAuditStatus });
+      }).catch(e => {
+        logger.error({ event: 'initial_audit_failed', error: e.message });
+        lastAuditStatus = 'UNKNOWN';
+        lastAuditStatusGauge.set(-1);
+      });
     });
 
     initSocket(server);
@@ -191,16 +205,32 @@ const start = async () => {
 
 start();
 
-// Graceful shutdown
+// Graceful shutdown (improved)
 const shutdown = async (signal) => {
   logger.info({ event: 'shutdown_initiated', signal });
   maintenanceMode = true;
-  if (server) server.close();
+
+  if (server) {
+    server.close((err) => {
+      if (err) {
+        logger.error({ event: 'server_close_error', error: err.message });
+      } else {
+        logger.info({ event: 'http_server_closed' });
+      }
+    });
+  }
+
   setTimeout(async () => {
-    await mongoose.connection.close(false);
+    try {
+      await mongoose.connection.close(false);
+      logger.info({ event: 'mongodb_closed' });
+    } catch (err) {
+      logger.error({ event: 'mongodb_close_error', error: err.message });
+    }
+
     logger.info({ event: 'shutdown_complete' });
     process.exit(0);
-  }, 3000);
+  }, 6000);
 };
 
 process.on('SIGTERM', () => shutdown('SIGTERM'));
