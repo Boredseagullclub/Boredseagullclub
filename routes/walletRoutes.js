@@ -1,3 +1,4 @@
+// routes/walletRoutes.js
 const express = require('express');
 const router = express.Router();
 const mongoose = require('mongoose');
@@ -5,7 +6,7 @@ const Decimal = require('decimal.js');
 const rateLimit = require('express-rate-limit');
 
 const validateAddress = require('../middleware/validateAddress');
-const solvencyGuard = require('../middleware/solvencyGuard');
+const { solvencyGuard } = require('../middleware/solvencyGuard');   // ← changed
 
 const User = require('../models/User');
 const Withdrawal = require('../models/Withdrawal');
@@ -13,27 +14,10 @@ const { checkAndLockQuota } = require('../services/quotaGuard');
 const { executeOnChainPayout } = require('../services/payoutEngine');
 const logger = require('../utils/logger');
 
-// Rate limiters
-const globalWithdrawLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 25,
-  message: { error: 'Too many withdrawal requests — slow down' }
-});
-
-const perUserWithdrawLimiter = rateLimit({
-  windowMs: 60 * 60 * 1000,
-  max: 10,
-  keyGenerator: (req) => req.user?.userId || req.ip,
-  skip: (req) => !req.user?.userId,
-  message: { error: 'You have reached the hourly withdrawal limit' }
-});
-
-const strictWithdrawLimiter = rateLimit({
-  windowMs: 60 * 60 * 1000,
-  max: 5,
-  keyGenerator: (req) => req.user?.userId || req.ip,
-  message: { error: 'Withdrawal rate limit reached — wait 1 hour' }
-});
+// Rate limiters (good as-is)
+const globalWithdrawLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 25, message: { error: 'Too many withdrawal requests — slow down' } });
+const perUserWithdrawLimiter = rateLimit({ windowMs: 60 * 60 * 1000, max: 10, keyGenerator: (req) => req.user?.userId || req.ip, skip: (req) => !req.user?.userId, message: { error: 'You have reached the hourly withdrawal limit' } });
+const strictWithdrawLimiter = rateLimit({ windowMs: 60 * 60 * 1000, max: 5, keyGenerator: (req) => req.user?.userId || req.ip, message: { error: 'Withdrawal rate limit reached — wait 1 hour' } });
 
 // Create Wallet (public)
 router.post('/wallet', async (req, res) => {
@@ -43,13 +27,13 @@ router.post('/wallet', async (req, res) => {
   let user = await User.findOne({ publicAddress });
   if (!user) user = await User.create({ publicAddress });
 
-  res.json({ success: true, wallet: user });
+  res.json({ success: true, userId: user._id });
 });
 
-// Withdrawal — fully protected
+// Withdrawal
 router.post(
   '/withdraw',
-  (req, res, next) => req.app.locals.authenticateJWT(req, res, next),   // ← correct
+  (req, res, next) => req.app.locals.authenticateJWT(req, res, next),
   globalWithdrawLimiter,
   perUserWithdrawLimiter,
   strictWithdrawLimiter,
@@ -73,15 +57,18 @@ router.post(
         const user = await User.findById(req.user.userId).session(session);
         if (!user) throw new Error('User not found');
 
-        const bal = user.balances?.get(token);
-        if (!bal || new Decimal(bal.toString()).lt(decAmount)) {
+        const currentBal = user.balances?.get(token) 
+          ? new Decimal(user.balances.get(token).toString()) 
+          : new Decimal(0);
+
+        if (currentBal.lt(decAmount)) {
           throw new Error('Insufficient balance');
         }
 
         await checkAndLockQuota(token, amount, session);
 
-        const newBal = new Decimal(bal.toString()).minus(decAmount).toString();
-        user.balances.set(token, mongoose.Types.Decimal128.fromString(newBal));
+        const newBal = currentBal.minus(decAmount);
+        user.balances.set(token, mongoose.Types.Decimal128.fromString(newBal.toFixed(18)));
         await user.save({ session });
 
         const [withdrawal] = await Withdrawal.create([{
@@ -93,8 +80,7 @@ router.post(
           status: 'PENDING'
         }], { session });
 
-        await session.commitTransaction();
-
+        // Fire and forget payout
         executeOnChainPayout(withdrawal._id)
           .then(txHash => Withdrawal.updateOne({ _id: withdrawal._id }, { status: 'COMPLETED', txHash }).exec())
           .catch(err => {
@@ -109,7 +95,6 @@ router.post(
         });
       });
     } catch (err) {
-      await session.abortTransaction();
       res.status(400).json({ error: err.message });
     } finally {
       session.endSession();
