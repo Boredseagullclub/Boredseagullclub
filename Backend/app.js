@@ -23,7 +23,7 @@ const { startStellarListener } = require('./stellarListener');
 const { startHederaListener } = require('./hederaListener');
 const { startEvmListeners } = require('./evmListener');
 const { initSocket } = require('./socketService');
-const solvencyGuard = require('./middleware/solvencyGuard');
+const { solvencyGuard } = require('./middleware/solvencyGuard');
 const validateAddress = require('./middleware/validateAddress');
 
 const app = express();
