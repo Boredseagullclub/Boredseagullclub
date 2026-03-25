@@ -1,5 +1,4 @@
 // services/reconciler.js
-
 const User = require('../models/User');
 const { Client: XrplClient } = require('xrpl');
 const StellarSdk = require('stellar-sdk');
@@ -17,7 +16,7 @@ async function performFullAudit() {
     timestamp: new Date().toISOString(),
     liabilities: {},
     assets: {},
-    errors: [],               // ← new: per-chain failures
+    errors: [],
     discrepancies: [],
     overallStatus: 'SOLVENT',
     criticalDeficits: [],
@@ -39,9 +38,9 @@ async function performFullAudit() {
     // 2. On-chain assets + collect errors
     const fetchResult = await getVerifiedOnChainBalances();
     report.assets = fetchResult.balances;
-    report.errors = fetchResult.errors;  // ← attached
+    report.errors = fetchResult.errors;
 
-    // 3. Compare over UNION of all known tokens (DB + chain)
+    // 3. Compare
     const allTokens = new Set([
       ...Object.keys(report.liabilities),
       ...Object.keys(report.assets),
@@ -85,7 +84,6 @@ async function performFullAudit() {
       }
     }
 
-    // 4. If any chain failed → downgrade status & alert
     if (report.errors.length > 0) {
       report.overallStatus = report.overallStatus === 'SOLVENT' ? 'PARTIAL' : report.overallStatus;
       logger.warn({
@@ -94,7 +92,6 @@ async function performFullAudit() {
         failedChains: report.errors.map(e => e.chain).join(', '),
         errorCount: report.errors.length,
       });
-      // Optional: alert on partial failure too
     }
 
     logger.info({
@@ -118,26 +115,32 @@ async function performFullAudit() {
   }
 }
 
-/**
- * @returns {Promise<{ balances: Object, errors: Array }>}
- */
 async function getVerifiedOnChainBalances() {
   const balances = {};
   const errors = [];
 
-    // ─── XRPL ───────────────────────────────────────────────────────────────
-  const xrpl = new XrplClient(process.env.XRPL_WS_URL);
+  if (!config?.CHAINS || !config?.TOKENS) {
+    throw new Error('Missing config for reconciler');
+  }
+
+  // ─── XRPL ───────────────────────────────────────────────────────────────
+  const xrpl = new XrplClient(process.env.XRPL_WS_URL || 'wss://xrplcluster.com');
   try {
     await xrpl.connect();
-    // ... logic ...
+    const response = await xrpl.request({
+      command: 'account_info',
+      account: process.env.XRPL_DEPOSIT_ADDRESS,
+      ledger_index: 'validated'
+    });
+    const xrpBalance = new Decimal(response.result.account_data.Balance).div(1_000_000);
+    balances.XRP = xrpBalance;
+    // TODO: Add issued token balances here if needed
   } catch (err) {
     errors.push({ chain: 'XRPL', error: err.message });
     logger.error({ module: 'Reconciler', chain: 'XRPL', error: err.message });
   } finally {
-    // This ensures the socket closes even if the request fails
-    if (xrpl.isConnected()) xrpl.disconnect();
+    if (xrpl.isConnected()) await xrpl.disconnect();
   }
-
 
   // ─── Stellar ────────────────────────────────────────────────────────────
   try {
@@ -149,9 +152,7 @@ async function getVerifiedOnChainBalances() {
         balances.XLM = new Decimal(bal.balance);
       } else {
         const tokenEntry = Object.entries(config.TOKENS).find(
-          ([_, spec]) =>
-            spec.networks?.XLM?.issuer === bal.asset_issuer &&
-            spec.networks?.XLM?.code === bal.asset_code
+          ([_, spec]) => spec.networks?.XLM?.issuer === bal.asset_issuer && spec.networks?.XLM?.code === bal.asset_code
         );
         if (tokenEntry) {
           const [token] = tokenEntry;
@@ -173,13 +174,11 @@ async function getVerifiedOnChainBalances() {
 
       const provider = new ethers.JsonRpcProvider(rpcUrl);
 
-      // 1. Native Balance (Still sequential, but just one call)
       const nativeBal = await provider.getBalance(depositAddr);
       const nativeSymbol = config.CHAINS?.[chain]?.nativeSymbol || chain;
       const nativeDec = config.CHAINS?.[chain]?.decimals || 18;
       balances[nativeSymbol] = new Decimal(nativeBal.toString()).div(new Decimal(10).pow(nativeDec));
 
-      // 2. Token Balances (Parallel Execution)
       const tokenEntries = Object.entries(config.TOKENS).filter(([_, spec]) => spec.networks?.[chain]?.contract);
       const abi = ['function balanceOf(address) view returns (uint256)'];
 
@@ -194,7 +193,6 @@ async function getVerifiedOnChainBalances() {
         }
       }));
 
-      // 3. Update Balances (Summing for multi-chain assets)
       tokenBalances.forEach(({ token, bal, dec, failed }) => {
         if (failed) return;
         const current = balances[token] || new Decimal(0);
@@ -211,9 +209,7 @@ async function getVerifiedOnChainBalances() {
   try {
     const operatorId = process.env.HEDERA_OPERATOR_ID;
     const operatorKey = process.env.HEDERA_OPERATOR_KEY;
-    if (!operatorId || !operatorKey) {
-      throw new Error('Hedera operator credentials missing');
-    }
+    if (!operatorId || !operatorKey) throw new Error('Hedera operator credentials missing');
 
     const hederaClient = HederaClient.forMainnet().setOperator(operatorId, operatorKey);
 
@@ -223,10 +219,7 @@ async function getVerifiedOnChainBalances() {
 
     balances.HBAR = new Decimal(balance.hbars.to(HbarUnit.Tinybar).toString()).div(1e8);
 
-    // HTS tokens
-    const tokenEntries = Object.entries(config.TOKENS).filter(
-      ([_, spec]) => spec.networks?.HBAR?.issuer
-    );
+    const tokenEntries = Object.entries(config.TOKENS).filter(([_, spec]) => spec.networks?.HBAR?.issuer);
 
     for (const [token, spec] of tokenEntries) {
       const tokenId = spec.networks.HBAR.issuer;
@@ -236,13 +229,11 @@ async function getVerifiedOnChainBalances() {
       const decimals = spec.networks.HBAR.decimals;
       if (decimals === undefined) {
         const errMsg = `Missing decimals for token ${token} on Hedera in config`;
-        logger.critical({ module: 'Reconciler', event: 'CONFIG_ERROR', token, error: errMsg });
-        throw new Error(errMsg); // ← fail fast
+        logger.error({ module: 'Reconciler', event: 'CONFIG_ERROR', token, error: errMsg });
+        throw new Error(errMsg);
       }
 
-      balances[token] = new Decimal(tokenBal.toString()).div(
-        new Decimal(10).pow(decimals)
-      );
+      balances[token] = new Decimal(tokenBal.toString()).div(new Decimal(10).pow(decimals));
     }
   } catch (err) {
     errors.push({ chain: 'HBAR', error: err.message });
