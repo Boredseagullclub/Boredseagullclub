@@ -49,12 +49,12 @@ router.post('/wallet', async (req, res) => {
 // Withdrawal — fully protected
 router.post(
   '/withdraw',
-  (req, res, next) => req.app.locals.authenticateJWT(req, res, next),   // ← Uses app.locals correctly
+  (req, res, next) => req.app.locals.authenticateJWT(req, res, next),   // ← correct
   globalWithdrawLimiter,
   perUserWithdrawLimiter,
   strictWithdrawLimiter,
   validateAddress,
-  solvencyGuard,                    // ✅ Now active
+  solvencyGuard,
   async (req, res) => {
     const { token, amount, destination, chain } = req.body;
 
@@ -95,11 +95,8 @@ router.post(
 
         await session.commitTransaction();
 
-        // Fire-and-forget payout
         executeOnChainPayout(withdrawal._id)
-          .then(txHash => {
-            Withdrawal.updateOne({ _id: withdrawal._id }, { status: 'COMPLETED', txHash }).exec();
-          })
+          .then(txHash => Withdrawal.updateOne({ _id: withdrawal._id }, { status: 'COMPLETED', txHash }).exec())
           .catch(err => {
             logger.error({ module: 'Payout', withdrawalId: withdrawal._id.toString(), error: err.message });
             Withdrawal.updateOne({ _id: withdrawal._id }, { status: 'FAILED', error: err.message }).exec();
