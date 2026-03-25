@@ -40,7 +40,7 @@ async function performFullAudit() {
     report.assets = fetchResult.balances;
     report.errors = fetchResult.errors;
 
-    // 3. Compare
+    // 3. Compare over UNION of all known tokens
     const allTokens = new Set([
       ...Object.keys(report.liabilities),
       ...Object.keys(report.assets),
@@ -134,7 +134,7 @@ async function getVerifiedOnChainBalances() {
     });
     const xrpBalance = new Decimal(response.result.account_data.Balance).div(1_000_000);
     balances.XRP = xrpBalance;
-    // TODO: Add issued token balances here if needed
+    // TODO: Add issued token balances (e.g. SeagullCoin) here later if needed
   } catch (err) {
     errors.push({ chain: 'XRPL', error: err.message });
     logger.error({ module: 'Reconciler', chain: 'XRPL', error: err.message });
@@ -174,11 +174,13 @@ async function getVerifiedOnChainBalances() {
 
       const provider = new ethers.JsonRpcProvider(rpcUrl);
 
+      // Native balance
       const nativeBal = await provider.getBalance(depositAddr);
       const nativeSymbol = config.CHAINS?.[chain]?.nativeSymbol || chain;
       const nativeDec = config.CHAINS?.[chain]?.decimals || 18;
       balances[nativeSymbol] = new Decimal(nativeBal.toString()).div(new Decimal(10).pow(nativeDec));
 
+      // Token balances
       const tokenEntries = Object.entries(config.TOKENS).filter(([_, spec]) => spec.networks?.[chain]?.contract);
       const abi = ['function balanceOf(address) view returns (uint256)'];
 
