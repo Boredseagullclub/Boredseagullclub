@@ -78,6 +78,10 @@ const authenticateJWT = (req, res, next) => {
   }
 };
 
+// === THIS IS THE LINE GEMINI WAS TALKING ABOUT ===
+app.locals.authenticateJWT = authenticateJWT;   // ← Makes it available to all routes
+
+
 // Routes
 app.use('/api/wallet', walletRoutes);
 app.use('/api/auth', authLimiter, authRoutes);
