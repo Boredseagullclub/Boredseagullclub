@@ -74,7 +74,7 @@ router.post(
         const [withdrawal] = await Withdrawal.create([{
           userId: user._id,
           token,
-          amount: mongoose.Types.Decimal128.fromString(amount),
+          amount: mongoose.Types.Decimal128.fromString(decAmount.toString()),
           toAddress: destination,
           chain,
           status: 'PENDING'
