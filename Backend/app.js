@@ -15,7 +15,7 @@ const jwt = require('jsonwebtoken');
 
 const walletRoutes = require('./routes/walletRoutes');
 const authRoutes = require('./routes/auth');
-const logger = require('./utils/logger');
+const logger = require('./logger');
 const { performFullAudit } = require('./services/reconciler');
 const { runConfirmationCycle } = require('./services/ConfirmationEngine');
 const { startXrplListener, getSyncStatus } = require('./xrplListener');
