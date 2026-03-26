@@ -29,6 +29,8 @@ const solvencyGuard = solvencyGuardModule.solvencyGuard;
 const validateAddress = require('./middleware/validateAddress');
 const { register, passkeySuccessCounter } = require('./services/metrics');
 
+
+
 const app = express();
 const PORT = process.env.PORT || 5000;
 
@@ -42,9 +44,21 @@ const passkeySuccessCounter = new prom.Counter({
   registers: [register],
 });
 
-const maintenanceGauge = new prom.Gauge({ name: 'seagull_maintenance_mode', help: '1 if maintenance mode enabled', registers: [register] });
-const xrplLagGauge = new prom.Gauge({ name: 'seagull_xrpl_ledger_lag', help: 'Current XRPL ledger gap', registers: [register] });
-const lastAuditStatusGauge = new prom.Gauge({ name: 'seagull_last_audit_status', help: '1=SOLVENT, 0=DEFICIT, -1=FAILED', registers: [register] });
+const maintenanceGauge = new prom.Gauge({ 
+  name: 'seagull_maintenance_mode', 
+  help: '1 if maintenance mode enabled', 
+  registers: [register] 
+});
+const xrplLagGauge = new prom.Gauge({ 
+  name: 'seagull_xrpl_ledger_lag', 
+  help: 'Current XRPL ledger gap', 
+  registers: [register] 
+});
+const lastAuditStatusGauge = new prom.Gauge({ 
+  name: 'seagull_last_audit_status', 
+  help: '1=SOLVENT, 0=DEFICIT, -1=FAILED', 
+  registers: [register] 
+});
 
 let lastAuditStatus = 'UNKNOWN';
 let lastAuditTime = null;
