@@ -32,11 +32,13 @@ async function processTx(tx) {
 
   const ts = tx.consensus_timestamp;
 
+  // Track the highest timestamp for checkpointing
   if (tsToFloat(ts) > tsToFloat(highestSeenTimestamp)) {
     highestSeenTimestamp = ts;
   }
 
-  let amount, token, fromAddr;
+  let amount = new Decimal(0);
+  let token, fromAddr;
 
   const memo = tx.memo_base64
     ? Buffer.from(tx.memo_base64, 'base64').toString().trim()
@@ -44,71 +46,64 @@ async function processTx(tx) {
 
   if (!memo) return;
 
-  // HBAR
-  const hbarXfer = tx.transfers?.find(
+  // 1. Check for HBAR Transfers (Sum all credits to deposit account)
+  const hbarCredits = (tx.transfers || []).filter(
     t => t.account === DEPOSIT_ACCOUNT_ID && Number(t.amount) > 0
   );
 
-  if (hbarXfer) {
+  if (hbarCredits.length > 0) {
     token = 'HBAR';
-    amount = new Decimal(hbarXfer.amount).div(1e8).toString();
-    fromAddr =
-      tx.transfers.find(t => Number(t.amount) < 0)?.account || 'unknown';
+    amount = hbarCredits.reduce((sum, t) => sum.plus(new Decimal(t.amount)), new Decimal(0)).div(1e8);
+    fromAddr = tx.transfers.find(t => Number(t.amount) < 0)?.account || 'unknown';
   }
 
-  // HTS
-  if (!token) {
-    const htsXfer = (tx.token_transfers || []).find(
-      t =>
-        t.account === DEPOSIT_ACCOUNT_ID &&
-        t.amount !== '0' &&
-        !t.is_approval
+  // 2. Check for HTS (Tokens) if no HBAR found
+  if (amount.isZero()) {
+    const htsCredits = (tx.token_transfers || []).filter(
+      t => t.account === DEPOSIT_ACCOUNT_ID && Number(t.amount) > 0 && !t.is_approval
     );
 
-    if (htsXfer) {
+    if (htsCredits.length > 0) {
+      // Find matching token in config
+      const tokenId = htsCredits[0].token_id;
       const match = Object.entries(config.TOKENS).find(
-        ([_, spec]) =>
-          spec.networks?.HBAR?.issuer === htsXfer.token_id
+        ([_, spec]) => spec.networks?.HBAR?.issuer === tokenId
       );
 
       if (match) {
         token = match[0];
-        const decimals =
-          config.TOKENS[token].networks.HBAR.decimals || 8;
+        const decimals = config.TOKENS[token].networks.HBAR.decimals;
+        
+        // Strict Decimal Check: Don't guess. If config is missing, skip and log.
+        if (decimals === undefined) {
+          logger.error({ event: 'missing_hbar_decimals', token, tokenId });
+          return;
+        }
 
-        amount = new Decimal(htsXfer.amount)
-          .div(10 ** decimals)
-          .toString();
+        amount = htsCredits
+          .reduce((sum, t) => sum.plus(new Decimal(t.amount)), new Decimal(0))
+          .div(new Decimal(10).pow(decimals));
 
-        fromAddr =
-          (tx.token_transfers || []).find(
-            t =>
-              t.amount.startsWith('-') &&
-              t.token_id === htsXfer.token_id
-          )?.account || 'unknown';
+        fromAddr = (tx.token_transfers || []).find(
+          t => t.amount.startsWith('-') && t.token_id === tokenId
+        )?.account || 'unknown';
       }
     }
   }
 
-  if (!token || !amount || new Decimal(amount).isZero()) return;
+  if (!token || amount.isZero()) return;
 
   const txHash = tx.transaction_id;
 
-  const user = await User.findOne(
-    { depositTag: memo },
-    { _id: 1 }
-  );
+  // Lookup user by their unique deposit tag (memo)
+  const user = await User.findOne({ depositTag: memo }, { _id: 1 });
 
   if (!user) {
-    logger.info({
-      event: 'unknown_memo',
-      memo,
-      txHash
-    });
+    logger.info({ event: 'unknown_memo', memo, txHash });
     return;
   }
 
-  // ✅ IDEMPOTENT UPSERT (NO DUPES EVER)
+  // ✅ IDEMPOTENT UPSERT
   await Deposit.updateOne(
     { txHash, chain: 'HBAR' },
     {
@@ -118,7 +113,7 @@ async function processTx(tx) {
         chain: 'HBAR',
         token,
         txHash,
-        amount,
+        amount: amount.toString(),
         txTimestamp: new Date(parseFloat(ts) * 1000),
         status: 'DETECTED'
       }
@@ -135,7 +130,8 @@ async function pollTransactions() {
   isPolling = true;
 
   try {
-    let url = `${MIRROR_URL}/api/v1/transactions?account.id=${DEPOSIT_ACCOUNT_ID}&limit=100&order=asc&timestamp=gte:${highestSeenTimestamp}`;
+    // Use 'gt' (Greater Than) instead of 'gte' to avoid reprocessing the checkpoint TX
+    let url = `${MIRROR_URL}/api/v1/transactions?account.id=${DEPOSIT_ACCOUNT_ID}&limit=100&order=asc&timestamp=gt:${highestSeenTimestamp}`;
 
     let processed = 0;
 
@@ -146,31 +142,20 @@ async function pollTransactions() {
 
       const txs = resp.data.transactions || [];
 
-      await Promise.all(
-        txs.map(async tx => {
-          await processTx(tx);
-          processed++;
-        })
-      );
+      for (const tx of txs) {
+        await processTx(tx);
+        processed++;
+      }
 
-      url = resp.data.links?.next
-        ? `${MIRROR_URL}${resp.data.links.next}`
-        : null;
+      url = resp.data.links?.next ? `${MIRROR_URL}${resp.data.links.next}` : null;
     }
 
-    logger.info({
-      module: 'HederaListener',
-      event: 'poll_success',
-      processed,
-      highestSeenTimestamp
-    });
+    if (processed > 0) {
+      logger.info({ module: 'HederaListener', event: 'poll_success', processed, highestSeenTimestamp });
+    }
 
   } catch (err) {
-    logger.error({
-      module: 'HederaListener',
-      event: 'poll_fail',
-      error: err.message
-    });
+    logger.error({ module: 'HederaListener', event: 'poll_fail', error: err.message });
   } finally {
     isPolling = false;
   }
@@ -189,11 +174,7 @@ async function saveCheckpoint() {
       { upsert: true }
     );
   } catch (err) {
-    logger.error({
-      module: 'HederaListener',
-      event: 'checkpoint_fail',
-      error: err.message
-    });
+    logger.error({ module: 'HederaListener', event: 'checkpoint_fail', error: err.message });
   }
 }
 
@@ -201,25 +182,16 @@ async function saveCheckpoint() {
 // START
 // ────────────────────────────────────────────────
 async function startHederaListener() {
-  logger.info({
-    module: 'HederaListener',
-    event: 'start',
-    account: DEPOSIT_ACCOUNT_ID
-  });
+  logger.info({ module: 'HederaListener', event: 'start', account: DEPOSIT_ACCOUNT_ID });
 
-  const last = await Ledger.findOne({ chain: 'HBAR' }).sort({ timestamp: -1 });
+  const last = await Ledger.findOne({ chain: 'HBAR' });
 
   if (last?.timestamp) {
     highestSeenTimestamp = last.timestamp;
-
-    logger.info({
-      module: 'HederaListener',
-      event: 'resume',
-      timestamp: highestSeenTimestamp
-    });
+    logger.info({ module: 'HederaListener', event: 'resume', timestamp: highestSeenTimestamp });
   }
 
-  setInterval(pollTransactions, 3000);
+  setInterval(pollTransactions, 5000); // 5s interval is safer for Mirror Node rate limits
   setInterval(saveCheckpoint, 30000);
 }
 
