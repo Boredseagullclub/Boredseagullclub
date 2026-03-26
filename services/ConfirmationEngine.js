@@ -1,11 +1,14 @@
+// services/ConfirmationEngine.js
 const Deposit = require('../models/Deposit');
 const User = require('../models/User');
 const mongoose = require('mongoose');
+const Decimal = require('decimal.js');
 const logger = require('../utils/logger');
-const axios = require('axios'); // for Slack alerts
-const depositQueue = require('./queues/depositQueue');
+const axios = require('axios');
 
-// Per-chain confirmation modules
+const SLACK_WEBHOOK = process.env.SLACK_WEBHOOK_URL;
+
+// Per-chain confirmation modules (these should exist or return simple {confirmed, confirmations})
 const chainConfirmations = {
   FLR: require('./ChainConfirmations/evm'),
   XDC: require('./ChainConfirmations/evm'),
@@ -14,167 +17,132 @@ const chainConfirmations = {
   HBAR: require('./ChainConfirmations/hedera'),
 };
 
-// Slack webhook for alerts
-const SLACK_WEBHOOK = process.env.SLACK_WEBHOOK_URL;
-
-
-// Wrap transactions
+// Atomic transaction wrapper
 async function withTransaction(fn) {
   const session = await mongoose.startSession();
   session.startTransaction();
   try {
     const result = await fn(session);
     await session.commitTransaction();
-    session.endSession();
     return result;
   } catch (err) {
     await session.abortTransaction();
-    session.endSession();
     throw err;
+  } finally {
+    session.endSession();
   }
 }
 
-// Helper to credit user balances
+// Safe credit using Decimal.js
 async function creditUser(user, token, amount, session) {
-  user.balances.set(
-    token,
-    BigInt(user.balances.get(token) || "0") + BigInt(amount)
-  );
+  const current = user.balances.get(token)
+    ? new Decimal(user.balances.get(token).toString())
+    : new Decimal(0);
+
+  const delta = new Decimal(amount.toString()); // safe even if amount is Decimal128 string
+  const newBalance = current.plus(delta);
+
+  user.balances.set(token, mongoose.Types.Decimal128.fromString(newBalance.toFixed(18)));
   await user.save({ session });
 }
 
-// Slack alert helper
+// Slack alert
 async function sendSlackAlert(message) {
   if (!SLACK_WEBHOOK) return;
   try {
     await axios.post(SLACK_WEBHOOK, { text: message });
   } catch (err) {
-    logger.error(`[DepositEngine] Failed to send Slack alert: ${err.message}`);
+    logger.error(`[DepositEngine] Slack alert failed: ${err.message}`);
   }
 }
 
-// Process a single deposit with retries
-async function processDeposit(dep, maxRetries = 3) {
-  for (let attempt = 1; attempt <= maxRetries; attempt++) {
-    try {
-      const result = await withTransaction(async (session) => {
+// Process single deposit safely
+async function processDeposit(dep) {
+  if (!dep || dep.status !== 'DETECTED') return 'SKIPPED';
 
-        const locked = await Deposit.findOneAndUpdate(
-          { _id: dep._id, status: 'DETECTED' },
-          { status: 'PROCESSING' },
-          { session, new: true }
-        );
-
-        if (!locked) {
-          logger.warn({
-            module: 'DepositEngine',
-            depositId: dep._id,
-            msg: 'Already locked or invalid state'
-          });
-          return 'SKIPPED';
-        }
-
-        logger.info({
-          module: 'DepositEngine',
-          depositId: dep._id,
-          chain: dep.chain,
-          attempt
-        });
-
-        const confirmFn = chainConfirmations[dep.chain];
-        if (!confirmFn) throw new Error('Unsupported chain');
-
-        const { confirmed, confirmations } = await confirmFn(dep);
-        
-        if (!confirmed) {
-          await Deposit.updateOne(
-  { _id: dep._id },
-  { $set: { confirmations } },
-  { session }
-);
-          return 'SKIPPED';
-        }
-
-        const user = await User.findOne({ publicAddress: dep.walletAddress }).session(session);
-        if (!user) throw new Error('User not found');
-
-        await creditUser(user, dep.token, dep.amount, session);
-
-        const updated = await Deposit.findOneAndUpdate(
-  { _id: dep._id, status: 'PROCESSING' },
-  { status: 'CREDITED', creditedAt: new Date() },
-  { session, new: true }
-);
-
-if (!updated) throw new Error('Deposit state changed unexpectedly');
-
-        logger.info({
-          module: 'DepositEngine',
-          depositId: dep._id,
-          status: 'CREDITED'
-        });
-
-        return 'CREDITED';
-      });
-
-      return result;
-
-    } catch (err) {
-
-      logger.error({
-        module: 'DepositEngine',
-        depositId: dep._id,
-        attempt,
-        error: err.message
-      });
-
-      if (attempt === maxRetries) {
-        await Deposit.updateOne(
-          { _id: dep._id },
-          { status: 'FAILED' }
-        );
-
-        await sendSlackAlert(
-          `[DepositEngine] ❌ Deposit ${dep._id} FAILED after ${maxRetries} attempts: ${err.message}`
-        );
-
-        return 'FAILED';
-      }
-
-      const delay = 1000 * 2 ** (attempt - 1); // 1s, 2s, 4s
-      await new Promise(r => setTimeout(r, delay));
-    }
-  }
-}
-
-
-// runConfirmationCycle fixed
-
-async function runConfirmationCycle() {
-  const deposits = await Deposit.find({ status: 'DETECTED' }).limit(50);
-
-  let queued = 0;
-
-  for (const dep of deposits) {
-    await depositQueue.add(
-      'process-deposit',
-      { depositId: dep._id.toString() },
-      {
-        attempts: 5,
-        backoff: { type: 'exponential', delay: 1000 },
-        removeOnComplete: true,
-        removeOnFail: false
-      }
+  return withTransaction(async (session) => {
+    // Optimistic lock
+    const locked = await Deposit.findOneAndUpdate(
+      { _id: dep._id, status: 'DETECTED' },
+      { status: 'PROCESSING' },
+      { session, new: true }
     );
 
-    queued++;
-  }
+    if (!locked) {
+      logger.warn({ module: 'DepositEngine', depositId: dep._id, msg: 'Already processed or locked' });
+      return 'SKIPPED';
+    }
 
-  logger.info({
-    module: 'DepositEngine',
-    msg: 'Queued deposits for processing',
-    count: queued
+    const confirmFn = chainConfirmations[dep.chain];
+    if (!confirmFn) throw new Error(`Unsupported chain: ${dep.chain}`);
+
+    const { confirmed, confirmations = 0 } = await confirmFn(dep);
+
+    if (!confirmed) {
+      await Deposit.updateOne(
+        { _id: dep._id },
+        { $set: { confirmations } },
+        { session }
+      );
+      return 'SKIPPED';
+    }
+
+    const user = await User.findOne({ publicAddress: dep.walletAddress }).session(session);
+    if (!user) throw new Error('User not found for deposit');
+
+    await creditUser(user, dep.token, dep.amount, session);
+
+    const updated = await Deposit.findOneAndUpdate(
+      { _id: dep._id, status: 'PROCESSING' },
+      { status: 'CREDITED', creditedAt: new Date(), confirmations },
+      { session, new: true }
+    );
+
+    if (!updated) throw new Error('Deposit state changed unexpectedly');
+
+    logger.info({
+      module: 'DepositEngine',
+      depositId: dep._id,
+      token: dep.token,
+      amount: dep.amount.toString(),
+      status: 'CREDITED'
+    });
+
+    return 'CREDITED';
+  }).catch(async (err) => {
+    logger.error({
+      module: 'DepositEngine',
+      depositId: dep._id,
+      error: err.message
+    });
+
+    await Deposit.updateOne(
+      { _id: dep._id },
+      { status: 'FAILED', error: err.message }
+    ).catch(() => {});
+
+    await sendSlackAlert(`[DepositEngine] ❌ Deposit ${dep._id} FAILED: ${err.message}`);
+    return 'FAILED';
   });
 }
 
-  module.exports = { runConfirmationCycle };
+// Main cycle — called from app.js interval
+async function runConfirmationCycle() {
+  const deposits = await Deposit.find({ status: 'DETECTED' }).limit(30); // conservative batch
+
+  let processed = 0;
+  for (const dep of deposits) {
+    await processDeposit(dep);
+    processed++;
+  }
+
+  if (processed > 0) {
+    logger.info({
+      module: 'DepositEngine',
+      msg: 'Processed deposits',
+      count: processed
+    });
+  }
+}
+
+module.exports = { runConfirmationCycle, processDeposit };
