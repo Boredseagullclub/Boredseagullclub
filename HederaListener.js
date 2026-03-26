@@ -1,8 +1,8 @@
 const axios = require('axios');
 const Decimal = require('decimal.js');
 const Bottleneck = require('bottleneck');
-const logger = require('logger.js'); // Node looks in node_modules
-const config = require('config.s');  // Typo in extension
+const logger = require('./logger');
+const config = require('./config');  // Typo in extension
 const Deposit = require('../models/Deposit');
 const User = require('../models/User');
 const Ledger = require('../models/Ledger');
