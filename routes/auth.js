@@ -10,13 +10,12 @@ const {
 const User = require('../models/User');
 const jwt = require('jsonwebtoken');
 const { verifySwapSignature } = require('../services/SignatureService');
-const { passkeySuccessCounter } = require('../app'); // Import from app.js (or use shared metrics file)
+const { passkeySuccessCounter } = require('../services/metrics'); // Moved to dedicated file
 
 const RP_ID = process.env.RP_ID || 'localhost';
 const RP_NAME = 'Seagull Exchange';
 const ORIGIN = process.env.FRONTEND_URL || 'http://localhost:3000';
 
-// Helper to generate JWT
 function signToken(user) {
   return jwt.sign(
     { userId: user._id, publicAddress: user.publicAddress },
@@ -25,21 +24,20 @@ function signToken(user) {
   );
 }
 
-// 1. Registration Start – requires wallet signature proof
+// 1. Registration Start
 router.post('/passkey/register/start', async (req, res) => {
   const { publicAddress, signature, nonce, timestamp, chain, publicKey } = req.body;
 
-  // Require proof of wallet ownership
   if (!signature || !nonce || !timestamp || !chain) {
     return res.status(400).json({ error: 'Wallet signature required to register passkey' });
   }
 
   const isValid = await verifySwapSignature({
     walletAddress: publicAddress,
-    publicKey, // Required for XRPL/HBAR, optional for EVM
+    publicKey,
     signature,
-    fromToken: 'any', // dummy values
-    toToken: 'any',
+    fromToken: 'registration',
+    toToken: 'passkey',
     amount: '0',
     nonce,
     timestamp,
@@ -50,23 +48,29 @@ router.post('/passkey/register/start', async (req, res) => {
     return res.status(401).json({ error: 'Invalid wallet signature – ownership not verified' });
   }
 
-  let user = await User.findOne({ publicAddress });
-  if (!user) {
-    user = await User.create({ publicAddress });
-  }
+  // Atomic Find or Create
+  let user = await User.findOneAndUpdate(
+    { publicAddress },
+    { $setOnInsert: { publicAddress, balances: {} } },
+    { upsert: true, new: true }
+  );
 
   const options = generateRegistrationOptions({
     rpName: RP_NAME,
     rpID: RP_ID,
     userID: user._id.toString(),
     userName: publicAddress,
-    userDisplayName: publicAddress.slice(0, 12) + '...',
+    userDisplayName: `${publicAddress.slice(0, 6)}...${publicAddress.slice(-4)}`,
     attestation: 'none',
     excludeCredentials: user.passkeys.map(cred => ({
       id: cred.credentialID,
       type: 'public-key',
       transports: cred.transports || [],
     })),
+    authenticatorSelection: {
+      residentKey: 'required',
+      userVerification: 'preferred',
+    },
   });
 
   user.pendingWebauthnChallenge = options.challenge;
@@ -75,10 +79,11 @@ router.post('/passkey/register/start', async (req, res) => {
   res.json(options);
 });
 
-// 2. Registration Finish (signature already verified in /start)
+// 2. Registration Finish
 router.post('/passkey/register/finish', async (req, res) => {
   const { publicAddress, response } = req.body;
   const user = await User.findOne({ publicAddress });
+  
   if (!user || !user.pendingWebauthnChallenge) {
     return res.status(400).json({ error: 'No pending registration' });
   }
@@ -97,31 +102,34 @@ router.post('/passkey/register/finish', async (req, res) => {
 
     const { credential } = verification.registrationInfo;
 
-    user.passkeys.push({
-      credentialID: credential.id,
-      credentialPublicKey: Buffer.from(credential.publicKey, 'base64'),
-      counter: credential.counter,
-      transports: credential.transports || [],
-      attestationType: 'none',
-      authenticatorAttachment: credential.authenticatorAttachment,
-    });
+    // Prevent duplicate passkey IDs
+    const alreadyExists = user.passkeys.some(p => p.credentialID === credential.id);
+    if (!alreadyExists) {
+        user.passkeys.push({
+          credentialID: credential.id,
+          credentialPublicKey: Buffer.from(credential.publicKey),
+          counter: credential.counter,
+          transports: credential.transports || [],
+          attestationType: 'none',
+        });
+    }
 
     user.pendingWebauthnChallenge = undefined;
     await user.save();
 
-    const token = signToken(user);
-    res.json({ success: true, token });
+    res.json({ success: true, token: signToken(user) });
   } catch (err) {
     res.status(400).json({ error: err.message });
   }
 });
 
-// 3. Login Start (unchanged)
+// 3. Login Start
 router.post('/passkey/login/start', async (req, res) => {
   const { publicAddress } = req.body;
   const user = await User.findOne({ publicAddress });
-  if (!user || user.passkeys.length === 0) {
-    return res.status(404).json({ error: 'No passkeys registered' });
+  
+  if (!user || !user.passkeys?.length) {
+    return res.status(404).json({ error: 'No passkeys found for this address' });
   }
 
   const options = generateAuthenticationOptions({
@@ -131,6 +139,7 @@ router.post('/passkey/login/start', async (req, res) => {
       type: 'public-key',
       transports: cred.transports || [],
     })),
+    userVerification: 'preferred',
   });
 
   user.pendingWebauthnChallenge = options.challenge;
@@ -139,17 +148,18 @@ router.post('/passkey/login/start', async (req, res) => {
   res.json(options);
 });
 
-// 4. Login Finish – increments success counter on success
+// 4. Login Finish
 router.post('/passkey/login/finish', async (req, res) => {
   const { publicAddress, response } = req.body;
   const user = await User.findOne({ publicAddress });
+  
   if (!user || !user.pendingWebauthnChallenge) {
     return res.status(400).json({ error: 'No pending login' });
   }
 
   try {
     const credential = user.passkeys.find(c => c.credentialID === response.id);
-    if (!credential) return res.status(400).json({ error: 'Credential not found' });
+    if (!credential) return res.status(400).json({ error: 'Credential not recognized' });
 
     const verification = await verifyAuthenticationResponse({
       response,
@@ -165,22 +175,17 @@ router.post('/passkey/login/finish', async (req, res) => {
     });
 
     if (!verification.verified) {
-      return res.status(400).json({ error: 'Verification failed' });
+      return res.status(400).json({ error: 'Biometric verification failed' });
     }
 
-    // Update counter & login stats
     credential.counter = verification.authenticationInfo.newCounter;
     user.lastLogin = new Date();
-    user.loginCount += 1;
     user.pendingWebauthnChallenge = undefined;
 
     await user.save();
-
-    // SUCCESS: Track successful passkey login
     passkeySuccessCounter.inc();
 
-    const token = signToken(user);
-    res.json({ success: true, token });
+    res.json({ success: true, token: signToken(user) });
   } catch (err) {
     res.status(400).json({ error: err.message });
   }
