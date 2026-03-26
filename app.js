@@ -8,7 +8,6 @@ const cors = require('cors');
 const mongoose = require('mongoose');
 const rateLimit = require('express-rate-limit');
 const cron = require('node-cron');
-const prom = require('prom-client');
 const path = require('path');
 const crypto = require('crypto');
 const jwt = require('jsonwebtoken');
@@ -24,44 +23,11 @@ const { startHederaListener } = require('./hederaListener');
 const { startEvmListeners } = require('./evmListener');
 const { initSocket } = require('./socketService');
 
-const solvencyGuardModule = require('./middleware/solvencyGuard');
-const solvencyGuard = solvencyGuardModule.solvencyGuard;
 const validateAddress = require('./middleware/validateAddress');
-const { register, passkeySuccessCounter } = require('./services/metrics');
-
-
+const { register, passkeySuccessCounter, maintenanceGauge, xrplLagGauge, lastAuditStatusGauge } = require('./services/metrics');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
-
-// Prometheus
-
-const passkeySuccessCounter = new prom.Counter({
-  name: 'seagull_passkey_login_success_total',
-  help: 'Total successful biometric logins',
-  registers: [register],
-});
-
-const maintenanceGauge = new prom.Gauge({ 
-  name: 'seagull_maintenance_mode', 
-  help: '1 if maintenance mode enabled', 
-  registers: [register] 
-});
-const xrplLagGauge = new prom.Gauge({ 
-  name: 'seagull_xrpl_ledger_lag', 
-  help: 'Current XRPL ledger gap', 
-  registers: [register] 
-});
-const lastAuditStatusGauge = new prom.Gauge({ 
-  name: 'seagull_last_audit_status', 
-  help: '1=SOLVENT, 0=DEFICIT, -1=FAILED', 
-  registers: [register] 
-});
-
-let lastAuditStatus = 'UNKNOWN';
-let lastAuditTime = null;
-let maintenanceMode = false;
-let server;
 
 // Critical env check
 const criticalEnvVars = ['MONGO_URI', 'XRP_HOT_WALLET_SEED', 'XDC_HOT_WALLET_KEY', 'FLR_HOT_WALLET_KEY', 'XLM_HOT_WALLET_SECRET', 'HBAR_HOT_WALLET_KEY', 'ADMIN_SECRET', 'JWT_SECRET', 'RP_ID', 'FRONTEND_URL', 'PORT'];
@@ -95,31 +61,33 @@ const authenticateJWT = (req, res, next) => {
 
 app.locals.authenticateJWT = authenticateJWT;
 
-// Routes
-app.use('/api/wallet', walletRoutes);
-app.use('/api/auth', authLimiter, authRoutes);
-app.use(express.static(path.join(__dirname, 'client/build')));
-
-// Timing-safe admin auth
+// Timing-safe admin auth (no length leak)
 const adminAuth = (req, res, next) => {
   const providedKey = String(req.headers['x-admin-key'] || '');
   const expectedKey = String(process.env.ADMIN_SECRET || '');
 
-  if (!providedKey || !expectedKey) {
+  // Always perform constant-time comparison (no early returns based on length or emptiness)
+  const providedBuffer = Buffer.from(providedKey);
+  const expectedBuffer = Buffer.from(expectedKey);
+
+  // If lengths differ, compare provided against itself (always false) to keep timing consistent
+  const lengthsMatch = providedBuffer.length === expectedBuffer.length;
+  const isEqual = lengthsMatch
+    ? crypto.timingSafeEqual(providedBuffer, expectedBuffer)
+    : !crypto.timingSafeEqual(providedBuffer, providedBuffer); // dummy compare for constant time
+
+  if (!isEqual) {
     logger.warn({ event: 'unauthorized_admin_attempt', ip: req.ip });
     return res.status(401).json({ error: 'Unauthorized' });
   }
 
-  const providedBuffer = Buffer.from(providedKey);
-  const expectedBuffer = Buffer.from(expectedKey);
-
-  if (providedBuffer.length === expectedBuffer.length && crypto.timingSafeEqual(providedBuffer, expectedBuffer)) {
-    return next();
-  }
-
-  logger.warn({ event: 'unauthorized_admin_attempt', ip: req.ip });
-  return res.status(401).json({ error: 'Unauthorized' });
+  next();
 };
+
+// Routes
+app.use('/api/wallet', walletRoutes);
+app.use('/api/auth', authLimiter, authRoutes);
+app.use(express.static(path.join(__dirname, 'client/build')));
 
 // Health & metrics
 app.get('/health/status', async (req, res) => {
@@ -168,6 +136,11 @@ app.use((err, req, res, next) => {
   logger.error({ module: 'GlobalError', error: err.message, stack: err.stack });
   res.status(500).json({ error: 'Internal Server Error' });
 });
+
+let lastAuditStatus = 'UNKNOWN';
+let lastAuditTime = null;
+let maintenanceMode = false;
+let server;
 
 // Boot sequence
 const start = async () => {
@@ -220,18 +193,15 @@ const start = async () => {
 
 start();
 
-// Graceful shutdown (improved)
+// Graceful shutdown
 const shutdown = async (signal) => {
   logger.info({ event: 'shutdown_initiated', signal });
   maintenanceMode = true;
 
   if (server) {
     server.close((err) => {
-      if (err) {
-        logger.error({ event: 'server_close_error', error: err.message });
-      } else {
-        logger.info({ event: 'http_server_closed' });
-      }
+      if (err) logger.error({ event: 'server_close_error', error: err.message });
+      else logger.info({ event: 'http_server_closed' });
     });
   }
 
@@ -242,7 +212,6 @@ const shutdown = async (signal) => {
     } catch (err) {
       logger.error({ event: 'mongodb_close_error', error: err.message });
     }
-
     logger.info({ event: 'shutdown_complete' });
     process.exit(0);
   }, 8000);
@@ -251,5 +220,3 @@ const shutdown = async (signal) => {
 process.on('SIGTERM', () => shutdown('SIGTERM'));
 process.on('SIGINT', () => shutdown('SIGINT'));
 process.on('unhandledRejection', (reason) => logger.error({ event: 'unhandled_rejection', reason }));
-
-// Use decimal.js + Decimal128 for all amounts
