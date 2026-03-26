@@ -27,6 +27,7 @@ const { initSocket } = require('./socketService');
 const solvencyGuardModule = require('./middleware/solvencyGuard');
 const solvencyGuard = solvencyGuardModule.solvencyGuard;
 const validateAddress = require('./middleware/validateAddress');
+const { register, passkeySuccessCounter } = require('./services/metrics');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
