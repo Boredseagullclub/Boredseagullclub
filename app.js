@@ -35,8 +35,6 @@ const app = express();
 const PORT = process.env.PORT || 5000;
 
 // Prometheus
-const register = new prom.Registry();
-prom.collectDefaultMetrics({ register });
 
 const passkeySuccessCounter = new prom.Counter({
   name: 'seagull_passkey_login_success_total',
