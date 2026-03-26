@@ -1,7 +1,9 @@
+// services/ChainConfirmations/xrpl.js
 const { Client } = require('xrpl');
+const Decimal = require('decimal.js');
 
 module.exports = async function confirmXrpl(dep, expectedTag) {
-  const client = new Client(process.env.XRPL_RPC_URL);
+  const client = new Client(process.env.XRPL_RPC_URL || 'wss://xrplcluster.com');
 
   try {
     await client.connect();
@@ -12,42 +14,42 @@ module.exports = async function confirmXrpl(dep, expectedTag) {
     });
 
     const result = tx.result;
-
-    // Must be validated
-    if (!result.validated) return { confirmed: false };
-
-    // Must be payment transaction
-    if (result.TransactionType !== 'Payment')
+    if (!result.validated || result.TransactionType !== 'Payment' || result.meta.TransactionResult !== 'tesSUCCESS') {
       return { confirmed: false };
+    }
 
-    // Must succeed
-    if (result.meta.TransactionResult !== 'tesSUCCESS')
+    if (result.Destination !== process.env.XRPL_DEPOSIT_ADDRESS) {
       return { confirmed: false };
+    }
 
-    // Must go to deposit wallet
-    if (result.Destination !== process.env.XRPL_DEPOSIT_ADDRESS)
-      return { confirmed: false };
-
-    // Destination tag must match user
-    if (Number(result.DestinationTag) !== Number(expectedTag))
+    if (Number(result.DestinationTag) !== Number(expectedTag)) {
       return { confirmed: false, error: 'Destination Tag mismatch' };
+    }
 
-    // Partial payment protection
-    const deliveredAmount = result.meta.delivered_amount;
+    // Normalize delivered_amount (Drops or Issued Currency)
+    let deliveredAmount;
+    const delivered = result.meta.delivered_amount;
 
-    if (!deliveredAmount)
+    if (typeof delivered === 'string') {
+      // Native XRP in drops
+      deliveredAmount = new Decimal(delivered).div(1_000_000);
+    } else if (delivered && delivered.value) {
+      // Issued currency
+      deliveredAmount = new Decimal(delivered.value);
+    } else {
       return { confirmed: false };
+    }
 
     return {
       confirmed: true,
-      amount: deliveredAmount,
+      amount: deliveredAmount.toString(),
       ledger: result.ledger_index
     };
 
   } catch (err) {
-    console.error("XRPL Confirm Error:", err.message);
+    logger.error({ module: 'ConfirmXrpl', txHash: dep.txHash, error: err.message });
     return { confirmed: false };
   } finally {
-    await client.disconnect();
+    await client.disconnect().catch(() => {});
   }
 };
