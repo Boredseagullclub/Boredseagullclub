@@ -19,7 +19,8 @@ const transport = process.env.NODE_ENV === 'production'
     };
 
 const logger = pino({
-  transport
+  transport,
+  level: process.env.LOG_LEVEL || 'info'   // allows LOG_LEVEL=debug in dev
 });
 
 module.exports = logger;
