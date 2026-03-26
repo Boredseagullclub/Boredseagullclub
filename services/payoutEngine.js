@@ -3,6 +3,13 @@ const { ethers } = require('ethers');
 const Withdrawal = require('../models/Withdrawal');
 const logger = require('../utils/logger');
 const config = require('../config');
+const {
+  getAndIncrementNonce,
+  syncNonceWithChain,
+  decrementNonce,
+} = require('./nonceManager');
+
+const MAX_NONCE_RETRIES = 2;
 
 async function executeOnChainPayout(withdrawalId) {
   const withdrawal = await Withdrawal.findById(withdrawalId);
@@ -14,112 +21,152 @@ async function executeOnChainPayout(withdrawalId) {
   const chain = withdrawal.chain.toUpperCase();
   const token = withdrawal.token.toUpperCase();
   const tokenSpec = config.TOKENS[token]?.networks?.[chain] || {};
+  const decimals = tokenSpec.decimals ?? config.CHAINS[chain]?.decimals ?? 18;
 
-  const decimals = tokenSpec.decimals || config.CHAINS[chain]?.decimals || 18;
+  const rpcUrl = process.env[`${chain}_RPC_URL`];
+  const hotWalletKey = process.env[`${chain}_HOT_WALLET_KEY`];
 
-  try {
-    const rpcUrl = process.env[`${chain}_RPC_URL`];
-    const hotWalletKey = process.env[`${chain}_HOT_WALLET_KEY`];
+  if (!rpcUrl || !hotWalletKey) {
+    const msg = `Missing RPC or hot wallet key for ${chain}`;
+    logger.error({ module: 'PayoutEngine', event: 'CONFIG_ERROR', withdrawalId, chain });
+    await Withdrawal.updateOne({ _id: withdrawalId }, { status: 'FAILED', error: msg });
+    throw new Error(msg);
+  }
 
-    if (!rpcUrl || !hotWalletKey) {
-      throw new Error(`Missing RPC or hot wallet key for ${chain}`);
-    }
+  const provider = new ethers.JsonRpcProvider(rpcUrl);
+  const wallet = new ethers.Wallet(hotWalletKey, provider);
+  const walletAddress = wallet.address;
 
-    const provider = new ethers.JsonRpcProvider(rpcUrl);
-    const wallet = new ethers.Wallet(hotWalletKey, provider);
+  const amountWei = ethers.parseUnits(withdrawal.amount.toString(), decimals);
 
-    const amountWei = ethers.parseUnits(withdrawal.amount.toString(), decimals);
-
-    const feeData = await provider.getFeeData();
-    const gasPrice = (feeData.gasPrice * 125n) / 100n;
-
-    let txRequest = {
-      gasPrice,
-      nonce: undefined, // ethers can manage or plug in nonceManager later
+  // Build the base tx (without nonce/gasLimit yet)
+  let txRequest;
+  if (tokenSpec.contract) {
+    const erc20Interface = new ethers.Interface([
+      'function transfer(address to, uint256 amount) returns (bool)',
+    ]);
+    txRequest = {
+      to: tokenSpec.contract,
+      data: erc20Interface.encodeFunctionData('transfer', [withdrawal.toAddress, amountWei]),
+      value: 0n,
     };
+  } else {
+    txRequest = {
+      to: withdrawal.toAddress,
+      value: amountWei,
+    };
+  }
 
-    if (tokenSpec.contract) {
-      // ERC-20 transfer
-      const erc20Interface = new ethers.Interface([
-        'function transfer(address to, uint256 amount) returns (bool)'
-      ]);
-      txRequest.to = tokenSpec.contract;
-      txRequest.data = erc20Interface.encodeFunctionData('transfer', [
-        withdrawal.toAddress,
-        amountWei
-      ]);
-      txRequest.value = 0n;
-    } else {
-      // Native transfer
-      txRequest.to = withdrawal.toAddress;
-      txRequest.value = amountWei;
-    }
+  // Gas price with 25% bump
+  const feeData = await provider.getFeeData();
+  txRequest.gasPrice = (feeData.gasPrice * 125n) / 100n;
 
-    // Dynamic gas estimation with safety buffer
-    try {
-      const estimated = await provider.estimateGas(txRequest);
-      txRequest.gasLimit = (estimated * 125n) / 100n; // 25% buffer
-    } catch (estimateErr) {
-      txRequest.gasLimit = tokenSpec.contract ? 120000n : 21000n;
-      logger.warn({
-        module: 'PayoutEngine',
-        event: 'GAS_ESTIMATE_FALLBACK',
-        withdrawalId,
-        fallback: txRequest.gasLimit.toString(),
-        error: estimateErr.message
-      });
-    }
-
-    logger.info({
+  // Gas estimate (before we grab a nonce, so we can bail cheaply on failure)
+  try {
+    const estimated = await provider.estimateGas({ ...txRequest, from: walletAddress });
+    txRequest.gasLimit = (estimated * 125n) / 100n;
+  } catch (estimateErr) {
+    txRequest.gasLimit = tokenSpec.contract ? 120_000n : 21_000n;
+    logger.warn({
       module: 'PayoutEngine',
-      event: 'TX_BROADCAST_START',
+      event: 'GAS_ESTIMATE_FALLBACK',
       withdrawalId,
-      chain,
-      token,
-      isTokenTransfer: !!tokenSpec.contract
+      fallback: txRequest.gasLimit.toString(),
+      error: estimateErr.message,
     });
+  }
 
-    const txResponse = await wallet.sendTransaction(txRequest);
+  // Nonce-retry loop — handles "nonce too low" / "already known" races
+  let attempt = 0;
+  while (attempt <= MAX_NONCE_RETRIES) {
+    const nonce = await getAndIncrementNonce(walletAddress, chain);
+    txRequest.nonce = nonce;
 
-    // Mark as processing immediately after broadcast
-    await Withdrawal.updateOne(
-      { _id: withdrawalId },
-      { status: 'PROCESSING', txHash: txResponse.hash }
-    );
+    try {
+      logger.info({
+        module: 'PayoutEngine',
+        event: 'TX_BROADCAST_START',
+        withdrawalId,
+        chain,
+        token,
+        nonce,
+        isTokenTransfer: !!tokenSpec.contract,
+      });
 
-    const receipt = await txResponse.wait(1);
+      const txResponse = await wallet.sendTransaction(txRequest);
 
-    if (receipt.status === 1) {
+      // Record hash immediately so we can track even if wait() fails
       await Withdrawal.updateOne(
         { _id: withdrawalId },
-        { status: 'COMPLETED', txHash: receipt.hash }
+        { status: 'PROCESSING', txHash: txResponse.hash }
       );
-      logger.info({ module: 'PayoutEngine', event: 'TX_SUCCESS', withdrawalId, hash: receipt.hash });
-    } else {
-      throw new Error('Transaction reverted on-chain');
+
+      const receipt = await txResponse.wait(1);
+
+      if (receipt.status === 1) {
+        await Withdrawal.updateOne(
+          { _id: withdrawalId },
+          { status: 'COMPLETED', txHash: receipt.hash }
+        );
+        logger.info({
+          module: 'PayoutEngine',
+          event: 'TX_SUCCESS',
+          withdrawalId,
+          hash: receipt.hash,
+        });
+        return receipt.hash;
+      } else {
+        throw new Error('Transaction reverted on-chain');
+      }
+    } catch (err) {
+      const isNonceError =
+        err.message.includes('nonce too low') ||
+        err.message.includes('already known') ||
+        err.message.includes('replacement transaction underpriced');
+
+      if (isNonceError && attempt < MAX_NONCE_RETRIES) {
+        logger.warn({
+          module: 'PayoutEngine',
+          event: 'NONCE_COLLISION_RESYNC',
+          withdrawalId,
+          attempt,
+          nonce,
+          error: err.message,
+        });
+
+        // Resync DB nonce from chain before next attempt
+        await syncNonceWithChain(walletAddress, chain, provider);
+        attempt++;
+        continue;
+      }
+
+      // Non-nonce error or retries exhausted — decrement if we never broadcast
+      const neverBroadcast =
+        err.message.includes('nonce too low') ||
+        err.message.includes('insufficient funds') ||
+        err.message.includes('gas');
+
+      if (neverBroadcast) {
+        // Safe to give back the nonce slot since tx didn't land
+        await decrementNonce(walletAddress, chain);
+      }
+
+      logger.error({
+        module: 'PayoutEngine',
+        event: 'PAYOUT_ERROR',
+        withdrawalId,
+        nonce,
+        attempt,
+        error: err.message,
+      });
+
+      await Withdrawal.updateOne(
+        { _id: withdrawalId },
+        { status: 'FAILED', error: err.message }
+      );
+
+      throw err;
     }
-
-    return receipt.hash;
-
-  } catch (err) {
-    logger.error({
-      module: 'PayoutEngine',
-      event: 'PAYOUT_ERROR',
-      withdrawalId,
-      error: err.message
-    });
-
-    if (err.message.includes('nonce too low') || err.message.includes('already known')) {
-      logger.info({ module: 'PayoutEngine', event: 'TX_ALREADY_KNOWN', withdrawalId });
-      return;
-    }
-
-    await Withdrawal.updateOne(
-      { _id: withdrawalId },
-      { status: 'FAILED', error: err.message }
-    );
-
-    throw err;
   }
 }
 
