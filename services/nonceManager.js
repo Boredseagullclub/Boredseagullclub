@@ -1,34 +1,67 @@
-// services/nonceManager.js
-const Nonce = require('../models/Nonce');  // ← now points to the updated models/Nonce.js
+// services/nonceManager.js  (improved)
+
+const Nonce = require('../models/Nonce');
 
 async function getAndIncrementNonce(walletAddress, chain) {
-  const filter = { 
+  const filter = {
     walletAddress: walletAddress.toLowerCase().trim(),
-    chain: chain.toUpperCase() 
+    chain: chain.toUpperCase(),
   };
 
-  const update = { $inc: { nextNonce: 1 } };
+  const doc = await Nonce.findOneAndUpdate(
+    filter,
+    { $inc: { nextNonce: 1 } },
+    { 
+      upsert: true, 
+      new: true, 
+      setDefaultsOnInsert: true,
+      // Optional: add a small timeout or retry if you want extra safety
+    }
+  );
 
-  const options = { 
-    upsert: true, 
-    new: true, 
-    setDefaultsOnInsert: true 
-  };
-
-  const doc = await Nonce.findOneAndUpdate(filter, update, options);
-  return doc.nextNonce - 1;  // the nonce to use NOW
+  return doc.nextNonce - 1; // nonce to use for this tx
 }
 
 async function syncNonceWithChain(walletAddress, chain, provider) {
-  const onChainNonce = await provider.getTransactionCount(walletAddress, 'pending');
+  try {
+    const onChainNonce = await provider.getTransactionCount(
+      walletAddress, 
+      'pending'   // Important: use 'pending'
+    );
 
-  await Nonce.findOneAndUpdate(
-    { walletAddress: walletAddress.toLowerCase().trim(), chain: chain.toUpperCase() },
-    { $set: { nextNonce: onChainNonce } },
-    { upsert: true }
-  );
+    await Nonce.findOneAndUpdate(
+      {
+        walletAddress: walletAddress.toLowerCase().trim(),
+        chain: chain.toUpperCase(),
+      },
+      { $set: { nextNonce: onChainNonce } },
+      { upsert: true }
+    );
 
-  return onChainNonce;
+    return onChainNonce;
+  } catch (err) {
+    logger.error({ module: 'NonceManager', event: 'SYNC_FAILED', walletAddress, chain, error: err.message });
+    throw err;
+  }
 }
 
-module.exports = { getAndIncrementNonce, syncNonceWithChain };
+/**
+ * Roll back nonce when tx definitely never reached the network.
+ * Use cautiously — only when you're 100% sure the tx was never sent.
+ */
+async function decrementNonce(walletAddress, chain) {
+  await Nonce.findOneAndUpdate(
+    {
+      walletAddress: walletAddress.toLowerCase().trim(),
+      chain: chain.toUpperCase(),
+    },
+    { $inc: { nextNonce: -1 } },
+    { upsert: false }   // Do NOT upsert on decrement
+  );
+}
+
+module.exports = { 
+  getAndIncrementNonce, 
+  syncNonceWithChain, 
+  decrementNonce 
+};
