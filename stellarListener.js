@@ -6,8 +6,8 @@ const User = require('../models/User');
 const Ledger = require('../models/Ledger');
 const logger = require('../utils/logger');
 const axios = require('axios');
-const prom = require('prom-client');
-const { register } = require('./services/metrics');
+const client = require('prom-client');
+const { register } = require('./services/metrics');   // or './metrics' depending on exact path
 
 const HORIZON = process.env.STELLAR_HORIZON_URL || 'https://horizon.stellar.org';
 const DEPOSIT_ADDRESS = process.env.STELLAR_DEPOSIT_ADDRESS;
@@ -27,37 +27,37 @@ const MAX_BATCH = 1000;
 const BUFFER_WARNING_THRESHOLD = 5000;
 const RECONNECT_ALERT_THRESHOLD = 5;
 
-// Prometheus metrics — all using shared register
-const depositsBuffered = new prom.Counter({
+// Prometheus metrics — using the shared register
+const depositsBuffered = new client.Counter({
   name: 'stellar_deposits_buffered_total',
   help: 'Total number of Stellar deposits buffered',
   labelNames: ['token'],
-  registers: [register],
+  registers: [register]          // ← this is the important part
 });
 
-const depositsFlushed = new prom.Counter({
+const depositsFlushed = new client.Counter({
   name: 'stellar_deposits_flushed_total',
   help: 'Total number of Stellar deposits flushed to database',
   labelNames: ['status'],
-  registers: [register],
+  registers: [register]
 });
 
-const reconnectCount = new prom.Counter({
+const reconnectCount = new client.Counter({
   name: 'stellar_reconnect_total',
   help: 'Total reconnection attempts to Stellar Horizon',
-  registers: [register],
+  registers: [register]
 });
 
-const ledgerLag = new prom.Gauge({
+const ledgerLag = new client.Gauge({
   name: 'stellar_ledger_lag',
   help: 'Current lag between highest seen ledger and latest ledger',
-  registers: [register],
+  registers: [register]
 });
 
-const bufferSize = new prom.Gauge({
+const bufferSize = new client.Gauge({
   name: 'stellar_deposit_buffer_size',
   help: 'Current number of deposits in buffer waiting to be flushed',
-  registers: [register],
+  registers: [register]
 });
 
 setInterval(flushDeposits, FLUSH_INTERVAL);
