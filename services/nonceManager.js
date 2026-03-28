@@ -87,13 +87,21 @@ async function syncNonceWithChain(walletAddress, chain, provider) {
  * (e.g., signing failed before sendRawTransaction).
  * Otherwise you risk nonce gaps or "nonce too low" issues.
  */
+/**
+ * Use ONLY when you are 100% sure the transaction was never broadcast
+ * (e.g., signing failed before sendRawTransaction).
+ * Otherwise you risk nonce gaps or "nonce too low" issues.
+ */
 async function decrementNonce(walletAddress, chain, session = null) {
   const filter = {
     walletAddress: walletAddress.toLowerCase().trim(),
     chain: chain.toUpperCase(),
   };
 
-  const options = { upsert: false, ...(session && { session }) };
+  const options = { 
+    upsert: false, 
+    ...(session && { session }) 
+  };
 
   const result = await Nonce.findOneAndUpdate(
     filter,
@@ -108,9 +116,10 @@ async function decrementNonce(walletAddress, chain, session = null) {
       walletAddress,
       chain
     });
+    return null;                    // ← clear signal that nothing was decremented
   }
 
-  return result;
+  return result;   // success - return the result (or you could return result.nextNonce if you want)
 }
 
 module.exports = { 
