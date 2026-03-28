@@ -20,8 +20,10 @@ async function executeOnChainPayout(withdrawalId) {
 
   const chain = withdrawal.chain.toUpperCase();
   const token = withdrawal.token.toUpperCase();
-  const tokenSpec = config.TOKENS[token]?.networks?.[chain] || {};
-  const decimals = tokenSpec.decimals ?? config.CHAINS[chain]?.decimals ?? 18;
+
+  const tokenSpec = config.TOKENS?.[token]?.networks?.[chain] || {};
+  const chainSpec = config.CHAINS?.[chain] || {};
+  const decimals = tokenSpec.decimals ?? chainSpec.decimals ?? 18;
 
   const rpcUrl = process.env[`${chain}_RPC_URL`];
   const hotWalletKey = process.env[`${chain}_HOT_WALLET_KEY`];
@@ -37,10 +39,11 @@ async function executeOnChainPayout(withdrawalId) {
   const wallet = new ethers.Wallet(hotWalletKey, provider);
   const walletAddress = wallet.address;
 
-  const amountWei = ethers.parseUnits(withdrawal.amount.toString(), decimals);
+  const amountStr = withdrawal.amount.toString(); // Decimal128 → string
+  const amountWei = ethers.parseUnits(amountStr, decimals);
 
-  // Build the base tx (without nonce/gasLimit yet)
-  let txRequest;
+  // Build base transaction
+  let txRequest = {};
   if (tokenSpec.contract) {
     const erc20Interface = new ethers.Interface([
       'function transfer(address to, uint256 amount) returns (bool)',
@@ -59,9 +62,11 @@ async function executeOnChainPayout(withdrawalId) {
 
   // Gas price with 25% bump
   const feeData = await provider.getFeeData();
-  txRequest.gasPrice = (feeData.gasPrice * 125n) / 100n;
+  txRequest.gasPrice = feeData.gasPrice 
+    ? (feeData.gasPrice * 125n) / 100n 
+    : undefined;
 
-  // Gas estimate (before we grab a nonce, so we can bail cheaply on failure)
+  // Gas estimate with fallback
   try {
     const estimated = await provider.estimateGas({ ...txRequest, from: walletAddress });
     txRequest.gasLimit = (estimated * 125n) / 100n;
@@ -76,7 +81,7 @@ async function executeOnChainPayout(withdrawalId) {
     });
   }
 
-  // Nonce-retry loop — handles "nonce too low" / "already known" races
+  // Nonce retry loop
   let attempt = 0;
   while (attempt <= MAX_NONCE_RETRIES) {
     const nonce = await getAndIncrementNonce(walletAddress, chain);
@@ -95,7 +100,6 @@ async function executeOnChainPayout(withdrawalId) {
 
       const txResponse = await wallet.sendTransaction(txRequest);
 
-      // Record hash immediately so we can track even if wait() fails
       await Withdrawal.updateOne(
         { _id: withdrawalId },
         { status: 'PROCESSING', txHash: txResponse.hash }
@@ -119,7 +123,7 @@ async function executeOnChainPayout(withdrawalId) {
         throw new Error('Transaction reverted on-chain');
       }
     } catch (err) {
-      const isNonceError =
+      const isNonceError = 
         err.message.includes('nonce too low') ||
         err.message.includes('already known') ||
         err.message.includes('replacement transaction underpriced');
@@ -134,21 +138,19 @@ async function executeOnChainPayout(withdrawalId) {
           error: err.message,
         });
 
-        // Resync DB nonce from chain before next attempt
         await syncNonceWithChain(walletAddress, chain, provider);
         attempt++;
         continue;
       }
 
-      // Non-nonce error or retries exhausted — decrement if we never broadcast
-      const neverBroadcast =
+      // Non-nonce error → possibly decrement
+      const neverBroadcast = 
         err.message.includes('nonce too low') ||
         err.message.includes('insufficient funds') ||
         err.message.includes('gas');
 
       if (neverBroadcast) {
-        // Safe to give back the nonce slot since tx didn't land
-        await decrementNonce(walletAddress, chain);
+        await decrementNonce(walletAddress, chain).catch(() => {});
       }
 
       logger.error({
