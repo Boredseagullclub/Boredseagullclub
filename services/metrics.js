@@ -1,43 +1,45 @@
 // services/metrics.js
-
 const prom = require('prom-client');
 
-// Create a dedicated registry for the entire application
+// Dedicated registry for the entire application
 const register = new prom.Registry();
 
-// Optional: Add default labels that will appear on all metrics
+// Default labels for all metrics (helps with multi-app Grafana dashboards)
 register.setDefaultLabels({
   app: 'seagullcash',
   environment: process.env.NODE_ENV || 'development'
 });
 
-// Collect Node.js default metrics (memory, CPU, event loop, etc.) — do this ONLY here
+// Collect Node.js runtime metrics (CPU, memory, event loop, GC, etc.)
+// → Do this ONLY once, in this central file
 prom.collectDefaultMetrics({
   register,
   prefix: 'nodejs_'
 });
 
+// ── Application-specific metrics ─────────────────────────────────
+
 const passkeySuccessCounter = new prom.Counter({
   name: 'seagull_passkey_login_success_total',
-  help: 'Total successful biometric / passkey logins',
+  help: 'Total number of successful biometric / passkey logins',
   registers: [register],
 });
 
 const maintenanceGauge = new prom.Gauge({
   name: 'seagull_maintenance_mode',
-  help: '1 if maintenance mode is enabled',
+  help: '1 if maintenance mode is active, 0 otherwise',
   registers: [register],
 });
 
 const xrplLagGauge = new prom.Gauge({
   name: 'seagull_xrpl_ledger_lag',
-  help: 'Current XRPL ledger gap (processed vs network tip)',
+  help: 'XRPL ledger gap (processed ledger index vs network tip)',
   registers: [register],
 });
 
 const lastAuditStatusGauge = new prom.Gauge({
   name: 'seagull_last_audit_status',
-  help: '1=SOLVENT, 0=DEFICIT, -1=FAILED/UNKNOWN',
+  help: 'Last solvency audit result: 1 = SOLVENT, 0 = DEFICIT, -1 = FAILED/UNKNOWN',
   registers: [register],
 });
 
