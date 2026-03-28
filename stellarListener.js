@@ -1,12 +1,13 @@
-// services/stellarListener.js
+// stellarListener.js
 
 const StellarSdk = require('stellar-sdk');
 const Deposit = require('../models/Deposit');
 const User = require('../models/User');
 const Ledger = require('../models/Ledger');
 const logger = require('../utils/logger');
-const client = require('prom-client');
 const axios = require('axios');
+const prom = require('prom-client');
+const { register } = require('./services/metrics');
 
 const HORIZON = process.env.STELLAR_HORIZON_URL || 'https://horizon.stellar.org';
 const DEPOSIT_ADDRESS = process.env.STELLAR_DEPOSIT_ADDRESS;
@@ -26,48 +27,41 @@ const MAX_BATCH = 1000;
 const BUFFER_WARNING_THRESHOLD = 5000;
 const RECONNECT_ALERT_THRESHOLD = 5;
 
-// Prometheus metrics
-const depositsBuffered = new client.Counter({
+// Prometheus metrics — all using shared register
+const depositsBuffered = new prom.Counter({
   name: 'stellar_deposits_buffered_total',
   help: 'Total number of Stellar deposits buffered',
-  labelNames: ['token']
+  labelNames: ['token'],
+  registers: [register],
 });
 
-const depositsFlushed = new client.Counter({
+const depositsFlushed = new prom.Counter({
   name: 'stellar_deposits_flushed_total',
   help: 'Total number of Stellar deposits flushed to database',
-  labelNames: ['status']
+  labelNames: ['status'],
+  registers: [register],
 });
 
-const reconnectCount = new client.Counter({
+const reconnectCount = new prom.Counter({
   name: 'stellar_reconnect_total',
-  help: 'Total reconnection attempts to Stellar Horizon'
+  help: 'Total reconnection attempts to Stellar Horizon',
+  registers: [register],
 });
 
-const ledgerLag = new client.Gauge({
+const ledgerLag = new prom.Gauge({
   name: 'stellar_ledger_lag',
-  help: 'Current lag between highest seen ledger and latest ledger'
+  help: 'Current lag between highest seen ledger and latest ledger',
+  registers: [register],
 });
 
-const bufferSize = new client.Gauge({
+const bufferSize = new prom.Gauge({
   name: 'stellar_deposit_buffer_size',
-  help: 'Current number of deposits in buffer waiting to be flushed'
+  help: 'Current number of deposits in buffer waiting to be flushed',
+  registers: [register],
 });
-
-// Register all metrics
-const register = new client.Registry();
-client.collectDefaultMetrics({ register });
-register.registerMetric(depositsBuffered);
-register.registerMetric(depositsFlushed);
-register.registerMetric(reconnectCount);
-register.registerMetric(ledgerLag);
-register.registerMetric(bufferSize);
-
-// Export register for /metrics endpoint
-module.exports.promRegister = register;
 
 setInterval(flushDeposits, FLUSH_INTERVAL);
-setInterval(updateLedgerLag, 60000); // Update lag every minute
+setInterval(updateLedgerLag, 60000);
 setInterval(saveLedgerCheckpoint, 30000);
 
 async function startStellarListener() {
@@ -196,7 +190,7 @@ async function handlePayment(payment) {
   }
 
   let token = 'XLM';
-  let amount = payment.amount; // Keep as string for precision
+  let amount = payment.amount;
 
   if (payment.asset_type !== 'native') {
     if (
@@ -223,7 +217,6 @@ async function handlePayment(payment) {
   });
 
   depositsBuffered.inc({ token });
-
   bufferSize.set(depositBuffer.length);
 
   logger.info({
