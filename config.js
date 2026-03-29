@@ -76,8 +76,15 @@ module.exports = {
     SEAGULLCASH: "1000000"
   },
 
+    // 🚀 TWO-TIER FEE STRUCTURE
   FEES: {
-    SEAGULLCOIN: 0.025,
-    SEAGULLCASH: 0.01
+    // Native Bridge Assets (Institutional Tier)
+    NATIVE_ASSET: 0.004, // 0.4%
+    
+    // Seagull Ecosystem Assets (Loyalty Tier)
+    SEAGULLCOIN:  0.001, // 0.1%
+    SEAGULLCASH:  0.001, // 0.1%
+    
+    DEFAULT:      0.004  // Safety fallback
   }
 };
