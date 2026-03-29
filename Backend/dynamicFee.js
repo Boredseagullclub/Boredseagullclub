@@ -1,32 +1,24 @@
-// dynamicFee.js
+// dynamicFee.js - FINAL INSTITUTIONAL VERSION
 const config = require('./config');
 
-/**
- * Calculates the tier-based fee for a bridge or swap operation.
- * @param {string} tokenSymbol - The asset being moved (e.g., 'XRP', 'SEAGULLCASH')
- * @returns {number} The decimal fee rate (e.g., 0.004 for 0.4%)
- */
-async function getDynamicFee(tokenSymbol) {
-  if (!tokenSymbol) return config.FEES.DEFAULT;
+async function getDynamicFee(fromToken, toToken) {
+  const from = fromToken.toUpperCase();
+  const to = toToken.toUpperCase();
 
-  const symbol = tokenSymbol.toUpperCase();
+  const isFromL2 = (from === 'SEAGULLCOIN' || from === 'SEAGULLCASH');
+  const isToL2   = (to === 'SEAGULLCOIN' || to === 'SEAGULLCASH');
 
-  // 1. Check for Seagull Loyalty Tier (0.1%)
-  if (config.FEES[symbol]) {
-    return config.FEES[symbol];
-  }
+  // 1. L2 to L2 (The Loyalty Tier)
+  if (isFromL2 && isToL2) return 0.001; 
 
-  // 2. Check if it's a Native Bridge Asset (0.4%)
-  const isNative = Object.values(config.CHAINS).some(
-    (chain) => chain.nativeSymbol === symbol
-  );
+  // 2. Any exit to Native (The Exit Toll)
+  if (!isToL2) return 0.004;
 
-  if (isNative) {
-    return config.FEES.NATIVE_ASSET;
-  }
+  // 3. Entry from Native to L2 (Incentivized Entry)
+  if (!isFromL2 && isToL2) return 0.001; 
 
-  // 3. Fallback to default
-  return config.FEES.DEFAULT;
+  // 4. Native to Native (Standard Utility Bridge)
+  return 0.004;
 }
 
 module.exports = { getDynamicFee };
