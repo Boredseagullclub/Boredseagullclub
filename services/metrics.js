@@ -43,10 +43,18 @@ const lastAuditStatusGauge = new prom.Gauge({
   registers: [register],
 });
 
+const capturedFeesGauge = new prom.Gauge({
+  name: 'seagull_captured_fees_total',
+  help: 'Total surplus assets held in bridge wallets (Assets - Liabilities)',
+  labelNames: ['token'], // Track fees per token (XRP, XLM, etc.)
+  registers: [register],
+});
+
 module.exports = {
   register,
   passkeySuccessCounter,
   maintenanceGauge,
   xrplLagGauge,
   lastAuditStatusGauge,
+  capturedFeesGauge,
 };
