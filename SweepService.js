@@ -7,8 +7,8 @@ const Decimal = require('decimal.js');
 // 🛡️ The "Don't Break the Bridge" Buffer
 // We leave a small amount of native asset to cover gas for future txs
 const SAFETY_BUFFER = {
-  XRP: 20,    // 20 XRP for reserves/gas
-  XLM: 30,    // 30 XLM
+  XRP: 4,    // 20 XRP for reserves/gas
+  XLM: 10,    // 30 XLM
   XDC: 100,   // 100 XDC
   FLR: 100,   // 100 FLR
   HBAR: 50,   // 50 HBAR
