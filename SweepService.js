@@ -4,51 +4,84 @@ const { performFullAudit } = require('./reconciler');
 const logger = require('./logger');
 const Decimal = require('decimal.js');
 
-const SAFETY_BUFFER = 10; // Leave 10 units of the token for gas/dust
+// 🛡️ The "Don't Break the Bridge" Buffer
+// We leave a small amount of native asset to cover gas for future txs
+const SAFETY_BUFFER = {
+  XRP: 20,    // 20 XRP for reserves/gas
+  XLM: 30,    // 30 XLM
+  XDC: 100,   // 100 XDC
+  FLR: 100,   // 100 FLR
+  HBAR: 50,   // 50 HBAR
+  DEFAULT: 10
+};
 
+/**
+ * 🧹 SWEEP PROFITS
+ * Transfers the "Surplus" (Assets - Liabilities) to your cold storage.
+ */
 async function sweepProfits(tokenSymbol, chain) {
-  logger.info({ module: 'SweepService', event: 'start', token: tokenSymbol });
+  const symbol = tokenSymbol.toUpperCase();
+  const chainUpper = chain.toUpperCase();
 
-  // 1. Run a fresh audit to ensure we have the latest profit numbers
+  logger.info({ module: 'SweepService', event: 'audit_check_start', token: symbol });
+
+  // 1. FRESH AUDIT: Never sweep based on old data
   const audit = await performFullAudit();
   
-  if (audit.overallStatus !== 'SOLVENT') {
-    throw new Error("Cannot sweep: System is not currently solvent or audit failed.");
+  if (audit.overallStatus !== 'SOLVENT' && audit.overallStatus !== 'PARTIAL') {
+    throw new Error(`🚫 SWEEP BLOCKED: System is in ${audit.overallStatus} status. Solve deficits first.`);
   }
 
-  // 2. Find the surplus for this specific token
-  const entry = audit.discrepancies.find(d => d.token.toUpperCase() === tokenSymbol.toUpperCase());
-  if (!entry) throw new Error("Token not found in audit report.");
+  // 2. FIND SURPLUS: (Held On-Chain - Owed to Users)
+  const entry = audit.discrepancies.find(d => d.token.toUpperCase() === symbol);
+  if (!entry) throw new Error(`Token ${symbol} not found in recent audit.`);
 
-  const surplus = new Decimal(entry.difference); // (Held - Owed)
+  const surplus = new Decimal(entry.difference);
 
-  // 3. Subtract Safety Buffer
-  const sweepAmount = surplus.minus(SAFETY_BUFFER);
+  // 3. APPLY BUFFER: Leave some "dust" for gas
+  const buffer = SAFETY_BUFFER[symbol] || SAFETY_BUFFER.DEFAULT;
+  const sweepAmount = surplus.minus(buffer);
 
   if (sweepAmount.lte(0)) {
-    logger.info({ module: 'SweepService', event: 'skip', msg: 'Surplus below safety buffer' });
-    return { success: false, msg: 'Nothing to sweep after buffer' };
+    const msg = `Surplus (${surplus}) is less than safety buffer (${buffer}). Nothing to sweep.`;
+    logger.info({ module: 'SweepService', event: 'insufficient_surplus', msg });
+    return { success: false, message: msg };
   }
 
-  // 4. Send to Cold Wallet
-  const destination = process.env[`${chain.toUpperCase()}_COLD_WALLET`];
-  if (!destination) throw new Error(`Cold wallet not configured for ${chain}`);
+  // 4. COLD WALLET LOOKUP: Pull from .env
+  const coldWallet = process.env[`${chainUpper}_COLD_WALLET`];
+  if (!coldWallet) {
+    throw new Error(`Missing ${chainUpper}_COLD_WALLET in environment variables.`);
+  }
 
+  // 5. EXECUTE: Use the existing automated bridge logic to pay yourself
   logger.warn({ 
     module: 'SweepService', 
-    event: 'executing_transfer', 
+    event: 'executing_profit_withdrawal', 
     amount: sweepAmount.toString(), 
-    to: destination 
+    destination: coldWallet 
   });
 
-  const txHash = await settleOnChain(destination, tokenSymbol, sweepAmount.toString(), chain);
+  try {
+    const txHash = await settleOnChain(coldWallet, symbol, sweepAmount.toString(), chainUpper);
+    
+    logger.info({ 
+      module: 'SweepService', 
+      event: 'sweep_success', 
+      amount: sweepAmount.toString(), 
+      hash: txHash 
+    });
 
-  return {
-    success: true,
-    txHash,
-    amount: sweepAmount.toString(),
-    token: tokenSymbol
-  };
+    return {
+      success: true,
+      token: symbol,
+      amount: sweepAmount.toString(),
+      txHash
+    };
+  } catch (err) {
+    logger.error({ module: 'SweepService', event: 'transfer_failed', error: err.message });
+    throw err;
+  }
 }
 
 module.exports = { sweepProfits };
