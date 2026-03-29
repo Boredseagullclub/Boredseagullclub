@@ -1,0 +1,58 @@
+version: '3.8'
+
+services:
+  # 🌐 Main API & Socket Server
+  api:
+    build: .
+    command: node backend/app.js
+    ports:
+      - "5000:5000"
+    environment:
+      - NODE_ENV=production
+      - MONGO_URI=mongodb://mongo:27017/seagull
+      - REDIS_URL=redis://redis:6379
+    depends_on:
+      - mongo
+      - redis
+    restart: always
+
+  # 📥 Deposit & Confirmation Worker
+  confirmation-worker:
+    build: .
+    command: node backend/workers/confirmationWorker.js
+    environment:
+      - NODE_ENV=production
+      - MONGO_URI=mongodb://mongo:27017/seagull
+    depends_on:
+      - mongo
+    restart: always
+
+  # ⚙️ Job Queue Worker (BullMQ)
+  deposit-worker:
+    build: .
+    command: node backend/workers/depositWorker.js
+    environment:
+      - NODE_ENV=production
+      - MONGO_URI=mongodb://mongo:27017/seagull
+      - REDIS_URL=redis://redis:6379
+    depends_on:
+      - mongo
+      - redis
+    restart: always
+
+  # 🍃 Database
+  mongo:
+    image: mongo:latest
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo-data:/data/db
+
+  # 🔴 Queue Store
+  redis:
+    image: redis:alpine
+    ports:
+      - "6379:6379"
+
+volumes:
+  mongo-data:
