@@ -9,6 +9,7 @@ const axios = require('axios');
 const logger = require('../utils/logger');
 const config = require('../config');
 const { updateLastAuditResult } = require('../middleware/solvencyGuard');
+const { capturedFeesGauge } = require('../services/metrics'); // Simple flat require
 
 
 async function performFullAudit() {
@@ -62,6 +63,12 @@ async function performFullAudit() {
       const owed = report.liabilities[token] || new Decimal(0);
       const held = report.assets[token] || new Decimal(0);
       const diff = held.minus(owed);
+
+       // 🔥 ADD THIS: Push profit (surplus) to metrics
+      // If diff is positive, it's your fee revenue. If negative (deficit), set to 0.
+      const surplus = diff.gt(0) ? diff.toNumber() : 0;
+      capturedFeesGauge.set({ token: token.toUpperCase() }, surplus);
+
 
       const entry = {
         token,
