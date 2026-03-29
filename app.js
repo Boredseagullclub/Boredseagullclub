@@ -22,6 +22,8 @@ const { startStellarListener } = require('./stellarListener');
 const { startHederaListener } = require('./hederaListener');
 const { startEvmListeners } = require('./evmListener');
 const { initSocket } = require('./socketService');
+const { sweepProfits } = require('./SweepService'); // Add this!
+
 
 const validateAddress = require('./middleware/validateAddress');
 const { register, passkeySuccessCounter, maintenanceGauge, xrplLagGauge, lastAuditStatusGauge } = require('./services/metrics');
@@ -123,6 +125,16 @@ app.post('/admin/audit', adminAuth, async (req, res) => {
   try {
     const report = await performFullAudit();
     res.json(report);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/admin/sweep', adminAuth, async (req, res) => {
+  const { token, chain } = req.body;
+  try {
+    const result = await sweepProfits(token, chain);
+    res.json(result);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
