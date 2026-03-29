@@ -1,4 +1,4 @@
-version: '3.8'
+Version: '3.8'
 
 services:
   # 🌐 Main API & Socket Server
@@ -11,10 +11,11 @@ services:
       - NODE_ENV=production
       - MONGO_URI=mongodb://mongo:27017/seagull?replicaSet=rs0
     depends_on:
-      - mongo
+      mongo:
+        condition: service_healthy
     restart: always
 
-  # 📥 Confirmation Worker (The "Heartbeat")
+  # 📥 Confirmation Worker
   confirmation-worker:
     build: .
     command: node backend/workers/confirmationWorker.js
@@ -22,12 +23,11 @@ services:
       - NODE_ENV=production
       - MONGO_URI=mongodb://mongo:27017/seagull?replicaSet=rs0
     depends_on:
-      - mongo
+      mongo:
+        condition: service_healthy
     restart: always
 
-  # ⚙️ Deposit Worker (The "Processor")
-  # Note: Since you don't use Redis, this worker should use 
-  # a MongoDB-based queue or simple polling.
+  # ⚙️ Deposit Worker (Using Change Streams)
   deposit-worker:
     build: .
     command: node backend/workers/depositWorker.js
@@ -35,10 +35,11 @@ services:
       - NODE_ENV=production
       - MONGO_URI=mongodb://mongo:27017/seagull?replicaSet=rs0
     depends_on:
-      - mongo
+      mongo:
+        condition: service_healthy
     restart: always
 
-  # 🍃 MongoDB with Replica Set (Crucial for Change Streams)
+  # 🍃 MongoDB Core
   mongo:
     image: mongo:latest
     command: ["--replSet", "rs0", "--bind_ip_all"]
@@ -49,30 +50,18 @@ services:
     healthcheck:
       test: echo 'db.runCommand("ping").ok' | mongosh localhost:27017/test --quiet
       interval: 10s
-      timeout: 10s
+      timeout: 5s
       retries: 5
 
-volumes:
-  mongo-data:
-      - REDIS_URL=redis://redis:6379
-    depends_on:
-      - mongo
-      - redis
-    restart: always
-
-  # 🍃 Database
-  mongo:
+  # 🚀 Automated Setup (Runs once then exits)
+  mongo-init:
     image: mongo:latest
-    ports:
-      - "27017:27017"
-    volumes:
-      - mongo-data:/data/db
-
-  # 🔴 Queue Store
-  redis:
-    image: redis:alpine
-    ports:
-      - "6379:6379"
+    depends_on:
+      mongo:
+        condition: service_healthy
+    entrypoint: >
+      mongosh --host mongo:27017 --eval 
+      'if (!rs.status().ok) { rs.initiate({ _id: "rs0", members: [{ _id: 0, host: "mongo:27017" }] }) }'
 
 volumes:
   mongo-data:
