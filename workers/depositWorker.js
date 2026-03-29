@@ -52,4 +52,30 @@ async function catchUp() {
   }
 }
 
-module.exports = { startDepositWorker, catchUp };
+// ... keep your existing code above ...
+
+// 🚀 BOOT SEQUENCE
+const start = async () => {
+  try {
+    // Ensure we are connected to the DB (Docker environment uses MONGO_URI)
+    if (mongoose.connection.readyState === 0) {
+      await mongoose.connect(process.env.MONGO_URI);
+      logger.info({ module: 'DepositWorker', event: 'mongodb_connected' });
+    }
+
+    // 1. Run the catch-up first to handle missed deposits
+    await catchUp();
+
+    // 2. Start the real-time listener
+    await startDepositWorker();
+
+  } catch (err) {
+    logger.fatal({ module: 'DepositWorker', event: 'bootstrap_failed', error: err.message });
+    process.exit(1);
+  }
+};
+
+// Execute the boot sequence
+start();
+
+module.exports = { startDepositWorker, catchUp }; // Still exported for testing
