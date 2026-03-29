@@ -25,4 +25,4 @@ USER node
 EXPOSE 5000
 
 # 9. The default command (Overridden by docker-compose for workers)
-CMD ["node", "backend/app.js"]
+CMD ["node", "app.js"]
