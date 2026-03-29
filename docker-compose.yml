@@ -9,31 +9,51 @@ services:
       - "5000:5000"
     environment:
       - NODE_ENV=production
-      - MONGO_URI=mongodb://mongo:27017/seagull
-      - REDIS_URL=redis://redis:6379
+      - MONGO_URI=mongodb://mongo:27017/seagull?replicaSet=rs0
     depends_on:
       - mongo
-      - redis
     restart: always
 
-  # 📥 Deposit & Confirmation Worker
+  # 📥 Confirmation Worker (The "Heartbeat")
   confirmation-worker:
     build: .
     command: node backend/workers/confirmationWorker.js
     environment:
       - NODE_ENV=production
-      - MONGO_URI=mongodb://mongo:27017/seagull
+      - MONGO_URI=mongodb://mongo:27017/seagull?replicaSet=rs0
     depends_on:
       - mongo
     restart: always
 
-  # ⚙️ Job Queue Worker (BullMQ)
+  # ⚙️ Deposit Worker (The "Processor")
+  # Note: Since you don't use Redis, this worker should use 
+  # a MongoDB-based queue or simple polling.
   deposit-worker:
     build: .
     command: node backend/workers/depositWorker.js
     environment:
       - NODE_ENV=production
-      - MONGO_URI=mongodb://mongo:27017/seagull
+      - MONGO_URI=mongodb://mongo:27017/seagull?replicaSet=rs0
+    depends_on:
+      - mongo
+    restart: always
+
+  # 🍃 MongoDB with Replica Set (Crucial for Change Streams)
+  mongo:
+    image: mongo:latest
+    command: ["--replSet", "rs0", "--bind_ip_all"]
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo-data:/data/db
+    healthcheck:
+      test: echo 'db.runCommand("ping").ok' | mongosh localhost:27017/test --quiet
+      interval: 10s
+      timeout: 10s
+      retries: 5
+
+volumes:
+  mongo-data:
       - REDIS_URL=redis://redis:6379
     depends_on:
       - mongo
