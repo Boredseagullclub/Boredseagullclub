@@ -18,7 +18,7 @@ services:
 
   confirmation-worker:
     build: .
-    command: node backend/workers/confirmationWorker.js   # adjust path if worker is in root
+    command: node workers/confirmationWorker.js
     environment:
       - NODE_ENV=production
       - MONGO_URI=mongodb://${MONGO_ROOT_USER}:${MONGO_ROOT_PASSWORD}@mongo:27017/seagull?replicaSet=rs0&authSource=admin
@@ -31,7 +31,7 @@ services:
 
   deposit-worker:
     build: .
-    command: node backend/workers/depositWorker.js
+    command: node workers/depositWorker.js
     environment:
       - NODE_ENV=production
       - MONGO_URI=mongodb://${MONGO_ROOT_USER}:${MONGO_ROOT_PASSWORD}@mongo:27017/seagull?replicaSet=rs0&authSource=admin
@@ -45,7 +45,7 @@ services:
   mongo:
     image: mongo:8
     command: ["mongod", "--replSet", "rs0", "--bind_ip_all", "--auth"]
-    # Do NOT expose Mongo to the host in real production
+    # Do NOT expose MongoDB port to the host in production
     # ports:
     #   - "27017:27017"
     environment:
@@ -79,4 +79,4 @@ volumes:
 networks:
   seagull-net:
     driver: bridge
-    # internal: true   # Uncomment for max security (blocks host access to DB)
+    # internal: true   # Uncomment this in production for maximum DB isolation
