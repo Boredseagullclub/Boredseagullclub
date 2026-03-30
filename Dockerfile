@@ -1,28 +1,37 @@
-# 1. Use Node LTS Alpine for a small, secure footprint
-FROM node:20-alpine
+# ====================== BUILD STAGE ======================
+FROM node:20-alpine AS builder
 
-# 2. Install build dependencies (needed for some crypto/decimal libs if they compile from source)
-RUN apk add --no-cache python3 make g++
-
-# 3. Create app directory
 WORKDIR /usr/src/app
 
-# 4. Install dependencies first (leverages Docker caching)
+# Install build deps only for this stage
+RUN apk add --no-cache python3 make g++
+
 COPY package*.json ./
-RUN npm install --production
+RUN npm ci --production=false  # full install for potential build steps
 
-# 5. Copy the rest of your application code
 COPY . .
+# If you have any build step (e.g., TypeScript compile), run it here
 
-# 6. Create a logs directory and give the node user permission to write to it
-# This is crucial for your Pino logger to work in production
+# ====================== RUNTIME STAGE ======================
+FROM node:20-alpine
+
+WORKDIR /usr/src/app
+
+# Install only runtime deps (much smaller)
+COPY package*.json ./
+RUN npm ci --production && npm cache clean --force
+
+# Copy only necessary files from builder
+COPY --from=builder /usr/src/app/backend ./backend
+COPY --from=builder /usr/src/app/models ./models
+COPY --from=builder /usr/src/app/services ./services
+# ... copy other required folders (routes, workers, etc.)
+
 RUN mkdir -p logs && chown -R node:node /usr/src/app
 
-# 7. Security: Run as a non-privileged user
 USER node
 
-# 8. Expose the API port
 EXPOSE 5000
 
-# 9. The default command (Overridden by docker-compose for workers)
+# Better: use tini for proper signal handling if needed, but optional
 CMD ["node", "app.js"]
