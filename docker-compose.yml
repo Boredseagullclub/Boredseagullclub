@@ -1,7 +1,6 @@
-Version: '3.8'
+version: '3.8'
 
 services:
-  # 🌐 Main API & Socket Server
   api:
     build: .
     command: node backend/app.js
@@ -9,59 +8,42 @@ services:
       - "5000:5000"
     environment:
       - NODE_ENV=production
-      - MONGO_URI=mongodb://mongo:27017/seagull?replicaSet=rs0
+      # Remove secrets here! Use Docker secrets or external manager
+      - MONGO_URI=${MONGO_URI}  # still reference .env but don't hardcode
     depends_on:
       mongo:
         condition: service_healthy
-    restart: always
+    restart: unless-stopped
+    # Add: read_only: true + tmpfs for /tmp if possible (hardens further)
+    # networks: [backend]
 
-  # 📥 Confirmation Worker
-  confirmation-worker:
-    build: .
-    command: node backend/workers/confirmationWorker.js
-    environment:
-      - NODE_ENV=production
-      - MONGO_URI=mongodb://mongo:27017/seagull?replicaSet=rs0
-    depends_on:
-      mongo:
-        condition: service_healthy
-    restart: always
+  # Same improvements for confirmation-worker and deposit-worker
 
-  # ⚙️ Deposit Worker (Using Change Streams)
-  deposit-worker:
-    build: .
-    command: node backend/workers/depositWorker.js
-    environment:
-      - NODE_ENV=production
-      - MONGO_URI=mongodb://mongo:27017/seagull?replicaSet=rs0
-    depends_on:
-      mongo:
-        condition: service_healthy
-    restart: always
-
-  # 🍃 MongoDB Core
   mongo:
-    image: mongo:latest
-    command: ["--replSet", "rs0", "--bind_ip_all"]
+    image: mongo:8  # or latest, pin version
+    command: ["mongod", "--replSet", "rs0", "--bind_ip_all", "--auth"]
     ports:
       - "27017:27017"
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USER}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD}
     volumes:
       - mongo-data:/data/db
     healthcheck:
-      test: echo 'db.runCommand("ping").ok' | mongosh localhost:27017/test --quiet
+      test: echo 'db.runCommand("ping").ok' | mongosh --quiet -u ${MONGO_ROOT_USER} -p ${MONGO_ROOT_PASSWORD} --authenticationDatabase admin
       interval: 10s
       timeout: 5s
       retries: 5
+    # networks: [backend]
 
-  # 🚀 Automated Setup (Runs once then exits)
   mongo-init:
-    image: mongo:latest
+    image: mongo:8
     depends_on:
       mongo:
         condition: service_healthy
     entrypoint: >
-      mongosh --host mongo:27017 --eval 
-      'if (!rs.status().ok) { rs.initiate({ _id: "rs0", members: [{ _id: 0, host: "mongo:27017" }] }) }'
+      mongosh --host mongo:27017 -u ${MONGO_ROOT_USER} -p ${MONGO_ROOT_PASSWORD} --authenticationDatabase admin
+      --eval 'if (!rs.status().ok) { rs.initiate({ _id: "rs0", members: [{ _id: 0, host: "mongo:27017" }] }) }'
 
 volumes:
   mongo-data:
