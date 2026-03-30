@@ -1,37 +1,36 @@
-# ====================== BUILD STAGE ======================
-FROM node:20-alpine AS builder
-
-WORKDIR /usr/src/app
-
-# Install build deps only for this stage
-RUN apk add --no-cache python3 make g++
-
-COPY package*.json ./
-RUN npm ci --production=false  # full install for potential build steps
-
-COPY . .
-# If you have any build step (e.g., TypeScript compile), run it here
-
 # ====================== RUNTIME STAGE ======================
 FROM node:20-alpine
 
 WORKDIR /usr/src/app
 
-# Install only runtime deps (much smaller)
-COPY package*.json ./
-RUN npm ci --production && npm cache clean --force
+# Copy production dependencies from builder (best practice - avoids reinstalling)
+COPY --from=builder /usr/src/app/node_modules ./node_modules
 
-# Copy only necessary files from builder
-COPY --from=builder /usr/src/app/backend ./backend
+# Copy package.json (for reference/scripts)
+COPY --from=builder /usr/src/app/package.json ./
+
+# Core app files (since app.js is in root)
+COPY --from=builder /usr/src/app/app.js ./
+
+# Main folders your code uses
 COPY --from=builder /usr/src/app/models ./models
 COPY --from=builder /usr/src/app/services ./services
-# ... copy other required folders (routes, workers, etc.)
+COPY --from=builder /usr/src/app/routes ./routes
+COPY --from=builder /usr/src/app/workers ./workers
+COPY --from=builder /usr/src/app/utils ./utils
+COPY --from=builder /usr/src/app/config ./config
+COPY --from=builder /usr/src/app/middleware ./middleware
 
+# Add any other root-level or subfolders your project actually has
+# COPY --from=builder /usr/src/app/listeners ./listeners   # if you have separate listener files
+
+# Create logs directory and set correct permissions
 RUN mkdir -p logs && chown -R node:node /usr/src/app
 
+# Security: non-root user
 USER node
 
 EXPOSE 5000
 
-# Better: use tini for proper signal handling if needed, but optional
+# CMD now points to root-level app.js
 CMD ["node", "app.js"]
