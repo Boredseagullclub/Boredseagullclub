@@ -1,12 +1,11 @@
-// listeners/evmListener.js
 const { ethers } = require('ethers');
 const mongoose = require('mongoose');
 const Decimal = require('decimal.js');
-const logger = require('../utils/logger');
+const logger = require('./logger');
 const config = require('./config'); // your token config
 
-const Deposit = require('../models/Deposit');
-const User = require('../models/User');
+const Deposit = require('./models/Deposit');
+const User = require('./models/User');
 
 const SUPPORTED_CHAINS = {
   XDC: {
@@ -25,7 +24,7 @@ const SUPPORTED_CHAINS = {
   },
 };
 
-const TRANSFER_SIG = ethers.utils.id('Transfer(address,address,uint256)');
+const TRANSFER_SIG = ethers.utils?.id || ethers.id('Transfer(address,address,uint256)');
 
 let providers = {};
 let isRunning = {};
@@ -42,38 +41,54 @@ async function startEvmListener(chainKey, chainConfig) {
   isRunning[chainKey] = true;
 
   try {
-    const provider = new ethers.providers.WebSocketProvider(chainConfig.rpcUrl);
+    const isWss = chainConfig.rpcUrl.startsWith('wss://') || chainConfig.rpcUrl.startsWith('ws://');
+    const provider = isWss ? new ethers.WebSocketProvider(chainConfig.rpcUrl) : new (ethers.JsonRpcProvider || ethers.providers.JsonRpcProvider)(chainConfig.rpcUrl);
     providers[chainKey] = provider;
 
-    // Listen for new blocks
+    // Listen for new blocks and process both native + token transfers safely inline (bypassing eth_newFilter)
     provider.on('block', async (blockNumber) => {
       try {
-        const block = await provider.getBlockWithTransactions(blockNumber);
+        // Force a 3-block finality depth for Flare to prevent "cannot query unfinalized data" RPC crashes
+        const targetBlock = chainKey === 'FLR' ? blockNumber - 3 : blockNumber;
+        if (targetBlock < 0) return;
+
+        const block = await provider.getBlock(targetBlock, true);
+        if (!block || !block.transactions) return;
+
         for (const tx of block.transactions) {
-          if (tx.to && tx.value.gt(0)) {
+          // 1. Native token transfer check (XDC/FLR)
+          if (tx.to && tx.value > 0n) {
             await processNativeTransfer(tx, chainKey, chainConfig);
+          }
+
+          // 2. ERC-20 Token transfer check via receipt extraction
+          try {
+            const receipt = await provider.getTransactionReceipt(tx.hash);
+            if (receipt && receipt.status === 1 && receipt.logs) {
+              for (const log of receipt.logs) {
+                if (log.topics && log.topics[0] === TRANSFER_SIG) {
+                  await processTransferLog(log, chainKey, chainConfig);
+                }
+              }
+            }
+          } catch (receiptErr) {
+            logger.debug({ module: 'EvmListener', chain: chainKey, event: 'receipt_fetch_failed', txHash: tx.hash, error: receiptErr.message });
           }
         }
       } catch (err) {
-        logger.error({ module: 'EvmListener', chain: chainKey, error: err.message });
-      }
-    });
-
-    // Listen for ERC-20 Transfer events (faster token detection)
-    provider.on({
-      topics: [TRANSFER_SIG]
-    }, async (log) => {
-      try {
-        await processTransferLog(log, chainKey, chainConfig);
-      } catch (err) {
-        logger.error({ module: 'EvmListener', chain: chainKey, error: err.message });
+        // Gracefully catch any transient unfinalized data exceptions without breaking the stream loop
+        if (err.message.includes('unfinalized') || err.message.includes('-32000')) {
+          logger.debug({ module: 'EvmListener', chain: chainKey, event: 'unfinalized_block_skipped', blockNumber });
+        } else {
+          logger.error({ module: 'EvmListener', chain: chainKey, error: err.message });
+        }
       }
     });
 
     logger.info({ module: 'EvmListener', event: 'connected', chain: chainKey });
 
     // Reconnect on disconnect
-    provider._websocket.on('close', () => {
+    if (provider.websocket) provider.websocket.on('close', () => {
       logger.warn({ module: 'EvmListener', chain: chainKey, event: 'disconnected' });
       isRunning[chainKey] = false;
       setTimeout(() => startEvmListener(chainKey, chainConfig), 5000);
@@ -91,7 +106,7 @@ async function processNativeTransfer(tx, chainKey, chainConfig) {
   const user = await User.findOne({ [`evmDeposits.${chainKey}`]: toAddr });
   if (!user) return;
 
-  const amount = ethers.utils.formatUnits(tx.value, chainConfig.decimals);
+  const amount = ethers.formatUnits(tx.value, chainConfig.decimals);
 
   await Deposit.updateOne(
     { txHash: tx.hash, chain: chainKey },
@@ -128,7 +143,7 @@ async function processTransferLog(log, chainKey, chainConfig) {
 
   const tokenSymbol = tokenInfo.symbol;
   const decimals = tokenInfo.networks[chainKey].decimals || 18;
-  const amount = ethers.utils.formatUnits(log.data, decimals);
+  const amount = ethers.formatUnits(log.data, decimals);
 
   await Deposit.updateOne(
     { txHash: log.transactionHash, chain: chainKey },

@@ -1,7 +1,7 @@
 const mongoose = require('mongoose');
 const config = require('../config/walletconfig');
 const WalletStats = require('../models/WalletStats');
-const logger = require('../utils/logger');
+const logger = require('../logger');
 
 /**
  * 🛡️ The Treasury Guard

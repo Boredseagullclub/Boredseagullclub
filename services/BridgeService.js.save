@@ -1,0 +1,192 @@
+
+const { ethers } = require('ethers'); const xrpl = 
+require('xrpl'); const { Client: XrplClient, xrpToDrops, 
+Wallet } = require('xrpl'); const StellarSdk = 
+require('stellar-sdk'); const {
+    Client: HbarClient, PrivateKey, TransferTransaction, 
+    AccountId, TokenId
+} = require("@hashgraph/sdk");
+const Decimal = require('decimal.js');
+const { Builder } = require('xml2js');
+require('dotenv').config();
+
+function generatePacs008(txHash, receiver, amount, symbol, chain) {
+  const builder = new Builder();
+  const msg = {
+    Document: {
+      $: { xmlns: "urn:iso:std:iso:20022:tech:xsd:pacs.008.001.08" },
+      FIToFICstmrCdtTrf: {
+        GrpHdr: { MsgId: `SEAGULL-${chain}-${Date.now()}`, CreDtTm: new Date().toISOString(), NbOfTxs: "1", SttlmInf: { SttlmMtd: "CLRG" } },
+        CdtTrfTxInf: {
+          PmtId: { EndToEndId: txHash },
+          IntrBkSttlmAmt: { $: { Ccy: symbol }, _: amount },
+          InstdAmt: { $: { Ccy: symbol }, _: amount },
+          ChrgBr: "DEBT",
+          Dbtr: { Nm: "Seagull Hot Wallet", Role: "TREASURY" },
+          Cdtr: { Nm: "End User", PstlAdr: { AdrLine: receiver } },
+          SplmtryData: { Envlp: { TxHash: txHash, Chain: chain } }
+        }
+      }
+    }
+  };
+  return builder.buildObject(msg);
+}
+
+async function settleOnChain(walletAddress, tokenSymbol, amount, chain) {
+  const symbol = tokenSymbol.toUpperCase();
+  const chainUpper = chain.toUpperCase();
+  let txHash;
+  const rawAmount = new Decimal(amount.toString());
+  const amountToActuallySend = rawAmount.minus(rawAmount.times(0.004));
+
+  switch (chainUpper) {
+            case 'XRPL': {
+      const xClient = new xrpl.Client('wss://xrplcluster.com');
+      await xClient.connect();
+
+      // 1. Secret & Wallet Setup
+      const rawSecret = process.env.BRIDGE_XRPL_SECRET || "";
+      const cleanSecret = rawSecret.replace(/[^a-zA-Z ]/g, " ").replace(/\s+/g, " ").trim();
+
+      if (!cleanSecret || cleanSecret.split(' ').length !== 12) {
+        throw new Error(`Invalid Mnemonic: Found ${cleanSecret.split(' ').length} words.`);
+      }
+
+      const xWallet = xrpl.Wallet.fromMnemonic(cleanSecret);
+      console.log(`🦅 SEAGULL BRIDGE: Active Address ${xWallet.address}`);
+
+      // 2. ISO 20022 MESSAGE GENERATION
+      // We generate the XML here so we can "staple" it to the transaction
+      const isoXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Document xmlns="urn:iso:std:iso:20022:tech:xsd:pacs.008.001.08">
+  <FIToFICstmrCdtTrf>
+    <GrpHdr>
+      <MsgId>SEAGULL-XRPL-${Date.now()}</MsgId>
+      <CreDtTm>${new Date().toISOString()}</CreDtTm>
+      <NbOfTxs>1</NbOfTxs>
+      <SttlmInf><SttlmMtd>CLRG</SttlmMtd></SttlmInf>
+    </GrpHdr>
+    <CdtTrfTxInf>
+      <PmtId><EndToEndId>${Math.random().toString(36).substring(2)}</EndToEndId></PmtId>
+      <IntrBkSttlmAmt Ccy="${symbol}">${amountToActuallySend.toFixed(6)}</IntrBkSttlmAmt>
+      <Dbtr><Nm>Seagull Hot Wallet</Nm></Dbtr>
+      <Cdtr><Nm>End User</Nm><PstlAdr><AdrLine>${walletAddress}</AdrLine></PstlAdr></Cdtr>
+    </CdtTrfTxInf>
+  </FIToFICstmrCdtTrf>
+</Document>`;
+
+      // 3. HEX CONVERSION (The Ledger only speaks Hex)
+      const isoHex = Buffer.from(isoXml).toString('hex').toUpperCase();
+
+      // 4. TRANSACTION PREPARATION
+      const txJSON = {
+        TransactionType: "Payment",
+        Account: xWallet.address,
+        Destination: walletAddress,
+        Amount: (symbol === "XRP") 
+          ? xrpl.xrpToDrops(amountToActuallySend.toFixed(6)) 
+          : {
+              currency: (symbol === 'SEAGULLCASH'
+                ? '53656167756C6C43617368000000000000000000' 
+                : '53656167756C6C436F696E000000000000000000'
+              ),
+              issuer: 'rnqiA8vuNriU9pqD1ZDGFH8ajQBL25Wkno',
+              value: amountToActuallySend.toFixed(6)
+            },
+        // THE MAGIC DATA: This makes your CTID not blank
+        Memos: [
+          {
+            Memo: {
+              MemoType: Buffer.from("ISO20022").toString('hex').toUpperCase(),
+              MemoFormat: Buffer.from("text/xml").toString('hex').toUpperCase(),
+              MemoData: isoHex
+            }
+          }
+        ]
+      };
+
+      // 5. SIGN & SUBMIT
+      const prepared = await xClient.autofill(txJSON);
+      const signed = xWallet.sign(prepared);
+      const result = await xClient.submitAndWait(signed.tx_blob);
+
+      if (result.result.meta.TransactionResult !== "tesSUCCESS") {
+        throw new Error(`XRPL Error: ${result.result.meta.TransactionResult}`);
+      }
+
+      txHash = result.result.hash;
+      console.log(`✅ SUCCESS! ISO Message Anchored. Hash: ${txHash}`);
+      
+      await xClient.disconnect();
+      break;
+    }
+
+     
+ 
+      
+
+    
+    case 'XDC': {
+      const provider = new ethers.JsonRpcProvider(process.env.XDC_RPC_URL || 'https://erpc.xinfin.network');
+      let pk = process.env.BRIDGE_XDC_PRIVATE_KEY;
+      if (pk && !pk.startsWith('0x')) pk = '0x' + pk;
+      const wallet = new ethers.Wallet(pk, provider);
+      const target = ethers.getAddress(walletAddress.replace(/^xdc/, '0x'));
+      const tx = await wallet.sendTransaction({ to: target, value: ethers.parseEther(amountToActuallySend.toString()) });
+      const receipt = await tx.wait();
+      txHash = receipt.hash;
+      break;
+    }
+    case 'XLM': {
+      const SEAGULL_ISSUER = 'GBC2VA3YMAIVB3A77VNRPKMQI3RAPDUDDP7JI2PE426MGKDDJFPRVWP7';
+      const allowed = ['XLM', 'SEAGULLCASH'];
+      if (!allowed.includes(symbol)) throw new Error(`🛑 SECURITY: ${symbol} unauthorized`);
+      const server = new StellarSdk.Horizon.Server(process.env.STELLAR_RPC_URL || 'https://horizon.stellar.org');
+      const source = StellarSdk.Keypair.fromSecret(process.env.BRIDGE_STELLAR_SECRET);
+      const account = await server.loadAccount(source.publicKey());
+      let asset = (symbol === 'XLM') ? StellarSdk.Asset.native() : new StellarSdk.Asset('SEAGULLCASH', SEAGULL_ISSUER);
+      const tx = new StellarSdk.TransactionBuilder(account, { fee: StellarSdk.BASE_FEE, networkPassphrase: StellarSdk.Networks.PUBLIC })
+        .addOperation(StellarSdk.Operation.payment({ destination: walletAddress, asset, amount: amountToActuallySend.toFixed(7) }))
+        .setTimeout(30).build();
+      tx.sign(source);
+      const res = await server.submitTransaction(tx);
+      txHash = res.hash;
+      break;
+    }
+    case 'HBAR': {
+      const hToken = process.env.HEDERA_TOKEN_ID;
+      const hAcc = process.env.HEDERA_ACCOUNT_ID;
+      const hPk = process.env.HEDERA_PRIVATE_KEY.trim().replace(/^0x/, '');
+      
+      const client = HbarClient.forMainnet();
+      // 🦅 FORCE ECDSA FOR ACCOUNT 0.0.10414733
+      const privateKey = PrivateKey.fromStringECDSA(hPk);
+      client.setOperator(AccountId.fromString(hAcc), privateKey);
+
+      const recipient = walletAddress.toString().startsWith('0x') 
+        ? AccountId.fromEvmAddress(walletAddress) 
+        : AccountId.fromString(walletAddress);
+
+      console.log(`🦅 SEAGULL L2: [HBAR] Handshaking with ECDSA Key...`);
+
+      const transaction = await new TransferTransaction()
+        .addTokenTransfer(hToken, hAcc, -amountToActuallySend.toNumber())
+        .addTokenTransfer(hToken, recipient, amountToActuallySend.toNumber())
+        .freezeWith(client);
+
+      const response = await transaction.execute(client);
+      txHash = response.transactionId.toString();
+      break;
+    }
+    default:
+      throw new Error(`Chain ${chain} not supported`);
+  }
+
+  const isoMetadata = generatePacs008(txHash, walletAddress, amountToActuallySend.toString(), symbol, chainUpper);
+  console.log(isoMetadata);
+  return txHash;
+}
+module.exports = { settleOnChain };
+> /root/Boredseagullclub/services/BridgeService.js
+nano /root/Boredseagullclub/services/BridgeService.js
+

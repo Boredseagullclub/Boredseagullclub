@@ -1,6 +1,6 @@
 const User = require('../models/User');
 const Deposit = require('../models/Deposit');
-const logger = require('../utils/logger');
+const logger = require('../logger');
 const mongoose = require('mongoose');
 
 /**

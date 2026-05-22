@@ -1,29 +1,20 @@
-// ====================== app.js - FINAL CLEAN & FIXED ======================
-require('dotenv').config();
-
-const express = require('express');
-const bodyParser = require('body-parser');
-const helmet = require('helmet');
-const cors = require('cors');
-const mongoose = require('mongoose');
-const rateLimit = require('express-rate-limit');
-const cron = require('node-cron');
-const path = require('path');
-const crypto = require('crypto');
-const jwt = require('jsonwebtoken');
-
-const walletRoutes = require('./routes/walletRoutes');
-const authRoutes = require('./routes/auth');
-const logger = require('./logger');
-const { performFullAudit } = require('./reconciler');
-const { runConfirmationCycle } = require('./services/ConfirmationEngine');
-const { startXrplListener, getSyncStatus } = require('./xrplListener');
-const { startStellarListener } = require('./stellarListener');
-const { startHederaListener } = require('./hederaListener');
-const { startEvmListeners } = require('./evmListener');
-const { initSocket } = require('./socketService');
-const { sweepProfits } = require('./SweepService'); // Add this!
-
+require('dotenv').config(); const userRoutes = require('./routes/userRoutes'); // 
+🦅 Add this line! const express = require('express'); const bodyParser = 
+require('body-parser'); const helmet = require('helmet'); const cors = 
+require('cors'); const mongoose = require('mongoose'); const rateLimit = 
+require('express-rate-limit'); const cron = require('node-cron'); const path = 
+require('path'); const crypto = require('crypto'); const jwt = 
+require('jsonwebtoken'); const kycRoutes = require('./routes/kycRoutes'); const 
+walletRoutes = require('./routes/walletRoutes'); const authRoutes = 
+require('./routes/auth'); const logger = require('./logger'); const { 
+performFullAudit } = require('./reconciler'); const { runConfirmationCycle } = 
+require('./services/ConfirmationEngine'); const { startXrplListener, getSyncStatus 
+} = require('./xrplListener'); const { startStellarListener } = 
+require('./stellarListener'); const { startHederaListener } = 
+require('./hederaListener'); const { startEvmListeners } = 
+require('./evmListener'); const { initSocket } = require('./socketService'); const 
+{ sweepProfits } = require('./SweepService'); // Add this! const bridgeRoutes = 
+require('./routes/bridgeRoutes');
 
 const validateAddress = require('./middleware/validateAddress');
 const { register, passkeySuccessCounter, maintenanceGauge, xrplLagGauge, lastAuditStatusGauge } = require('./services/metrics');
@@ -42,7 +33,11 @@ criticalEnvVars.forEach(key => {
 
 // Middleware
 app.use(helmet({ contentSecurityPolicy: false }));
-app.use(cors({ origin: process.env.FRONTEND_URL, credentials: true }));
+app.use(cors({
+  origin: ['http://209.38.68.164:5173', 'https://www.seagull-xlm.xyz'],
+  credentials: true
+}));
+
 app.use(bodyParser.json());
 
 const authLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 20, message: { error: 'Too many auth attempts' } });
@@ -89,6 +84,8 @@ const adminAuth = (req, res, next) => {
 // Routes
 app.use('/api/wallet', walletRoutes);
 app.use('/api/auth', authLimiter, authRoutes);
+app.use('/api/bridge', bridgeRoutes);
+app.use('/api/user', userRoutes);
 app.use(express.static(path.join(__dirname, 'client/build')));
 
 // Health & metrics
@@ -140,7 +137,7 @@ app.post('/admin/sweep', adminAuth, async (req, res) => {
   }
 });
 
-// SPA catch-all
+// SPA catch-al (Frontend link)l
 app.get('*', (req, res) => res.sendFile(path.join(__dirname, 'client/build', 'index.html')));
 
 // Global error handler
@@ -156,8 +153,9 @@ let server;
 
 // Boot sequence
 const start = async () => {
+  console.log("!!! SEAGULL BOOT SEQUENCE INITIATED !!!");
   try {
-    await mongoose.connect(process.env.MONGO_URI);
+    await mongoose.connect(process.env.MONGO_URI);;
     logger.info({ event: 'mongodb_connected' });
 
     await startXrplListener();

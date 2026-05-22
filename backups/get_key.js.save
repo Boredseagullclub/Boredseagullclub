@@ -1,0 +1,22 @@
+const { Mnemonic } = require("@hashgraph/sdk");
+const readline = require("readline").createInterface({
+  input: process.stdin,
+  output: process.stdout
+});
+
+// This hides your words from the terminal history
+readline.question("bargain security same echo  detect rich build midnight  salute tank damage sick dad topple gravity pulse urge sting rough photo phone usual intact female", async (words) => {
+  try {
+    const mnemonic = await Mnemonic.fromString(words.trim());
+
+    // This specifically targets the ECDSA key for account 0.0.10414    const privateKey = await mnemonic.toStandardECDSAsecp256k1PrivateKey();
+    console.log("\n--------------------------------------------------");
+    console.log("🦅 SEAGULL RECOVERY SUCCESSFUL")
+    console.log("--------------------------------------------------");
+    console.log("Copy this string into your .env as HEDERA_PRIVATE_KEY:");
+   console.log(privateKey.toStringRaw()); 
+    console.log("--------------------------------------------------");
+  } catch (e) {
+    console.log("\n❌ ERROR:", e.message)
+  }
+

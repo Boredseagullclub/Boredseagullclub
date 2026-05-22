@@ -1,12 +1,12 @@
-// services/reconciler.js
+// backend/reconciler.js
 const User = require('../models/User');
 const { Client: XrplClient } = require('xrpl');
 const StellarSdk = require('stellar-sdk');
-const { Client: HederaClient, AccountBalanceQuery, HbarUnit } = require('@hashgraph/sdk');
+const { Client: HederaClient, AccountBalanceQuery, HbarUnit, PrivateKey } = require('@hashgraph/sdk');
 const { ethers } = require('ethers');
 const Decimal = require('decimal.js');
 const axios = require('axios');
-const logger = require('../utils/logger');
+const logger = require('../logger');
 const config = require('../config');
 const { updateLastAuditResult } = require('../middleware/solvencyGuard');
 const { capturedFeesGauge } = require('../services/metrics'); // Simple flat require
@@ -26,18 +26,18 @@ async function performFullAudit() {
   };
 
   try {
-        // 1. DB liabilities - High Precision Decimal128 Summing
+    // 1. DB liabilities - High Precision Decimal128 Summing
     const dbAgg = await User.aggregate([
       // Converts { "XRP": 10.5 } to [ { k: "XRP", v: 10.5 } ]
       { $project: { balances: { $objectToArray: '$balances' } } },
       // Flattens the array so we can group by token key
       { $unwind: '$balances' },
       // Sums the Decimal128 values directly without losing precision
-      { 
-        $group: { 
-          _id: '$balances.k', 
-          totalOwed: { $sum: '$balances.v' } 
-        } 
+      {
+        $group: {
+          _id: '$balances.k',
+          totalOwed: { $sum: '$balances.v' }
+        }
       },
     ]);
 
@@ -64,7 +64,7 @@ async function performFullAudit() {
       const held = report.assets[token] || new Decimal(0);
       const diff = held.minus(owed);
 
-       // 🔥 ADD THIS: Push profit (surplus) to metrics
+       // 🔥 Push profit (surplus) to metrics
       // If diff is positive, it's your fee revenue. If negative (deficit), set to 0.
       const surplus = diff.gt(0) ? diff.toNumber() : 0;
       capturedFeesGauge.set({ token: token.toUpperCase() }, surplus);
@@ -144,7 +144,7 @@ async function getVerifiedOnChainBalances() {
     throw new Error('Missing config for reconciler');
   }
 
-    // ─── XRPL ───────────────────────────────────────────────────────────────
+  // ─── XRPL ───────────────────────────────────────────────────────────────
   const xrpl = new XrplClient(process.env.XRPL_WS_URL || 'wss://xrplcluster.com');
   try {
     await xrpl.connect();
@@ -165,18 +165,18 @@ async function getVerifiedOnChainBalances() {
     });
 
     accountLines.result.lines.forEach(line => {
-      const tokenEntry = Object.entries(config.TOKENS).find(([_, spec]) => 
+      const tokenEntry = Object.entries(config.TOKENS).find(([_, spec]) =>
         spec.networks?.XRP?.issuer === line.account
       );
 
       if (tokenEntry) {
         const [tokenName] = tokenEntry;
         balances[tokenName] = new Decimal(line.balance).abs();
-        logger.info({ 
-          module: 'Reconciler', 
-          event: 'trust_line_found', 
-          token: tokenName, 
-          balance: line.balance 
+        logger.info({
+          module: 'Reconciler',
+          event: 'trust_line_found',
+          token: tokenName,
+          balance: line.balance
         });
       }
     });
@@ -187,9 +187,10 @@ async function getVerifiedOnChainBalances() {
   } finally {
     if (xrpl.isConnected()) await xrpl.disconnect();
   }
-  // ─── Stellar ────────────────────────────────────────────────────────────
+
+  // ─── Stellar (Upgraded for Horizon v12+) ────────────────────────────────
   try {
-    const stellar = new StellarSdk.Server(process.env.STELLAR_HORIZON_URL);
+    const stellar = new StellarSdk.Horizon.Server(process.env.STELLAR_HORIZON_URL || 'https://horizon.stellar.org');
     const acct = await stellar.loadAccount(process.env.STELLAR_DEPOSIT_ADDRESS);
 
     for (const bal of acct.balances) {
@@ -210,14 +211,30 @@ async function getVerifiedOnChainBalances() {
     logger.error({ module: 'Reconciler', chain: 'XLM', error: err.message });
   }
 
-  // ─── EVM (XDC + FLR) ────────────────────────────────────────────────────
+  // ─── EVM (XDC + FLR - Hardened Static Resolution) ──────────────────────
   for (const chain of ['XDC', 'FLR']) {
     try {
       const rpcUrl = process.env[`${chain}_RPC_URL`];
-      const depositAddr = process.env[`${chain}_DEPOSIT_ADDRESS`]?.toLowerCase();
-      if (!rpcUrl || !depositAddr) throw new Error(`Missing config for ${chain}`);
+      const rawAddress = process.env[`${chain}_DEPOSIT_ADDRESS`];
+      if (!rpcUrl || !rawAddress) throw new Error(`Missing config for ${chain}`);
 
-      const provider = new ethers.JsonRpcProvider(rpcUrl);
+      // Safely transform native 'xdc...' prefixes into standard '0x...' hex for Ethers validation loops
+      let depositAddr = rawAddress.trim().toLowerCase();
+      if (chain === 'XDC' && depositAddr.startsWith('xdc')) {
+        depositAddr = '0x' + depositAddr.slice(3);
+      }
+
+      if (!((ethers.isAddress || ethers.utils?.isAddress))(depositAddr)) {
+        throw new Error(`Invalid EVM deposit address verification signature on chain ${chain}`);
+      }
+
+      const chainId = chain === 'XDC' ? 50 : 14;
+      
+      // Explicit staticNetwork passing terminates any downstream runtime ENS name-discovery routines
+      const provider = new ethers.JsonRpcProvider(rpcUrl, undefined, {
+        staticNetwork: ethers.Network.from(chainId),
+        batchMaxCount: 1
+      });
 
       // Native balance
       const nativeBal = await provider.getBalance(depositAddr);
@@ -231,7 +248,8 @@ async function getVerifiedOnChainBalances() {
 
       const tokenBalances = await Promise.all(tokenEntries.map(async ([token, spec]) => {
         try {
-          const contract = new ethers.Contract(spec.networks[chain].contract, abi, provider);
+          const contractAddress = spec.networks[chain].contract.trim().toLowerCase();
+          const contract = new ethers.Contract(contractAddress, abi, provider);
           const bal = await contract.balanceOf(depositAddr);
           return { token, bal, dec: spec.networks[chain].decimals || 18 };
         } catch (e) {
@@ -252,16 +270,29 @@ async function getVerifiedOnChainBalances() {
     }
   }
 
-  // ─── Hedera ─────────────────────────────────────────────────────────────
+  // ─── Hedera (Robust Object/String Credential Extraction Layer) ───────────
   try {
-    const operatorId = process.env.HEDERA_OPERATOR_ID;
-    const operatorKey = process.env.HEDERA_OPERATOR_KEY;
-    if (!operatorId || !operatorKey) throw new Error('Hedera operator credentials missing');
+    const rawId = process.env.HEDERA_OPERATOR_ID || process.env.HEDERA_DEPOSIT_ACCOUNT || process.env.HBAR_HOT_WALLET;
+    const rawKey = process.env.HEDERA_OPERATOR_KEY || process.env.HEDERA_HOT_WALLET_KEY || process.env.HBAR_HOT_WALLET_KEY;
+    const depositAccount = process.env.HEDERA_DEPOSIT_ACCOUNT;
 
-    const hederaClient = HederaClient.forMainnet().setOperator(operatorId, operatorKey);
+    if (!rawId || !rawKey || !depositAccount) throw new Error('Hedera operator credentials missing');
+
+    const operatorId = String(rawId).trim();
+    
+    // Un-wrap the key text safely if the secret loader injected a nested config object
+    let privateKeyString = '';
+    if (typeof rawKey === 'object' && rawKey !== null) {
+      privateKeyString = rawKey.key || rawKey.secret || rawKey.privateKey || JSON.stringify(rawKey);
+    } else {
+      privateKeyString = String(rawKey).trim();
+    }
+    
+    const parsedKey = PrivateKey.fromString(privateKeyString);
+    const hederaClient = HederaClient.forMainnet().setOperator(operatorId, parsedKey);
 
     const balance = await new AccountBalanceQuery()
-      .setAccountId(process.env.HEDERA_DEPOSIT_ACCOUNT)
+      .setAccountId(depositAccount.trim())
       .execute(hederaClient);
 
     balances.HBAR = new Decimal(balance.hbars.to(HbarUnit.Tinybar).toString()).div(1e8);

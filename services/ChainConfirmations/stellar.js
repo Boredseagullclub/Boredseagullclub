@@ -1,9 +1,9 @@
 // services/ChainConfirmations/stellar.js
 const StellarSdk = require('stellar-sdk');
 const Decimal = require('decimal.js');
-const logger = require('../utils/logger');
+const logger = require('../../logger');
 
-const server = new StellarSdk.Server(process.env.STELLAR_HORIZON_URL || 'https://horizon.stellar.org');
+const server = new StellarSdk.Horizon.Server(process.env.STELLAR_HORIZON_URL || 'https://horizon.stellar.org');
 const DEPOSIT_ADDRESS = process.env.STELLAR_DEPOSIT_ADDRESS;
 
 module.exports = async function confirmStellar(dep) {

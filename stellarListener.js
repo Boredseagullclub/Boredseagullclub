@@ -1,10 +1,10 @@
 // stellarListener.js
 
 const StellarSdk = require('stellar-sdk');
-const Deposit = require('../models/Deposit');
-const User = require('../models/User');
-const Ledger = require('../models/Ledger');
-const logger = require('../utils/logger');
+const Deposit = require('./models/Deposit');
+const User = require('./models/User');
+const Ledger = require('./models/Ledger');
+const logger = require('./logger');
 const axios = require('axios');
 const client = require('prom-client');
 const { register } = require('./services/metrics');   // or './metrics' depending on exact path
@@ -16,7 +16,7 @@ const SEAGULLCASH_ISSUER =
   'GBC2VA3YMAIVB3A77VNRPKMQI3RAPDUDDP7JI2PE426MGKDDJFPRVWP7';
 const SLACK_WEBHOOK = process.env.SLACK_WEBHOOK_URL;
 
-const server = new StellarSdk.Server(HORIZON);
+const server = new StellarSdk.Horizon.Server(HORIZON);
 
 let highestSeenLedger = 0;
 let reconnectAttempts = 0;

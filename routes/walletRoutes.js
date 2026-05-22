@@ -12,12 +12,12 @@ const User = require('../models/User');
 const Withdrawal = require('../models/Withdrawal');
 const { checkAndLockQuota } = require('../services/quotaGuard');
 const { executeOnChainPayout } = require('../services/payoutEngine');
-const logger = require('../utils/logger');
+const logger = require('../logger');
 
 // Rate limiters (good as-is)
-const globalWithdrawLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 25, message: { error: 'Too many withdrawal requests — slow down' } });
-const perUserWithdrawLimiter = rateLimit({ windowMs: 60 * 60 * 1000, max: 10, keyGenerator: (req) => req.user?.userId || req.ip, skip: (req) => !req.user?.userId, message: { error: 'You have reached the hourly withdrawal limit' } });
-const strictWithdrawLimiter = rateLimit({ windowMs: 60 * 60 * 1000, max: 5, keyGenerator: (req) => req.user?.userId || req.ip, message: { error: 'Withdrawal rate limit reached — wait 1 hour' } });
+const globalWithdrawLimiter = rateLimit({ validate: { xForwardedForHeader: false }, windowMs: 15 * 60 * 1000, max: 25, message: { error: 'Too many withdrawal requests — slow down' } });
+const perUserWithdrawLimiter = rateLimit({ validate: { xForwardedForHeader: false }, windowMs: 60 * 60 * 1000, max: 10, keyGenerator: (req) => req.user?.userId || req.ip, skip: (req) => !req.user?.userId, message: { error: 'You have reached the hourly withdrawal limit' } });
+const strictWithdrawLimiter = rateLimit({ validate: { xForwardedForHeader: false }, windowMs: 60 * 60 * 1000, max: 5, keyGenerator: (req) => req.user?.userId || req.ip, message: { error: 'Withdrawal rate limit reached — wait 1 hour' } });
 
 // Create Wallet (public)
 router.post('/wallet', async (req, res) => {

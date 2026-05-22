@@ -1,7 +1,7 @@
 // services/confirmationChecker.js
 const { ethers } = require('ethers');
 const Deposit = require('../models/Deposit');
-const logger = require('../utils/logger');
+const logger = require('../logger');
 const config = require('../config');   // or '../config/walletconfig' if needed
 
 const CONFIRMATION_LEVELS = {

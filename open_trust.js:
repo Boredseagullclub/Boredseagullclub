@@ -1,0 +1,34 @@
+require('dotenv').config();
+const StellarSdk = require('stellar-sdk');
+
+async function openTrust() {
+    // 1. Connect to Public Network
+    const server = new StellarSdk.Horizon.Server("https://horizon.stellar.org");
+    
+    // 2. The DESTINATION wallet needs to sign this (The Receiver)
+    // You need the secret key for GBTOS6U2...
+    const receiverSecret = 'S...ENTER_DESTINATION_SECRET_HERE...'; 
+    const receiverKeypair = StellarSdk.Keypair.fromSecret(receiverSecret);
+
+    const asset = new StellarSdk.Asset(
+        'SEAGULLCASH', 
+        'GBC2VA3YMAIVB3A77VNRPKMQI3RAPDUDDP7JI2PE426MGKDDJFPRVWP7'
+    );
+
+    try {
+        const account = await server.loadAccount(receiverKeypair.publicKey());
+        const tx = new StellarSdk.TransactionBuilder(account, { fee: StellarSdk.BASE_FEE })
+            .addOperation(StellarSdk.Operation.changeTrust({ asset: asset }))
+            .setNetworkPassphrase(StellarSdk.Networks.PUBLIC)
+            .setTimeout(30)
+            .build();
+
+        tx.sign(receiverKeypair);
+        const res = await server.submitTransaction(tx);
+        console.log("✅ Trustline Open! Hash:", res.hash);
+    } catch (e) {
+        console.error("❌ Failed:", e.response?.data?.extras?.result_codes || e.message);
+    }
+}
+openTrust();
+

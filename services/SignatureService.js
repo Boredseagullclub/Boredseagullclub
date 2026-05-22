@@ -3,7 +3,7 @@ const { ethers } = require('ethers');
 const rippleKeypairs = require('ripple-keypairs');
 const StellarSdk = require('stellar-sdk');
 const { PublicKey } = require('@hashgraph/sdk');
-const logger = require('../utils/logger'); // assuming you have pino or similar
+const logger = require('../logger'); // assuming you have pino or similar
 
 /**
  * Build a deterministic message for swap signing

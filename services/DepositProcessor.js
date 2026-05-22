@@ -1,7 +1,7 @@
 const Deposit = require('../models/Deposit');
 const User = require('../models/User');
 const mongoose = require('mongoose');
-const logger = require('../utils/logger');
+const logger = require('../logger');
 const { chainConfirmations } = require('./ConfirmationEngine'); // import chains
 
 async function processDepositById(depositId) {

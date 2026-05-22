@@ -5,7 +5,7 @@ const Decimal = require('decimal.js');
 const Deposit = require('./models/Deposit');
 const User = require('./models/User');
 const Ledger = require('./models/Ledger');
-const LRU = require('lru-cache');
+const { LRUCache } = require('lru-cache');
 const config = require('./config');
 
 // ────────────────────────────────────────────────
@@ -16,7 +16,7 @@ let lastNetworkLedger = 0;
 let depositBuffer = [];
 let userBalances = new Map();
 
-const userCache = new LRU({ max: 5000, ttl: 1000 * 60 * 60 }); // shared across restarts
+const userCache = new LRUCache({ max: 5000, ttl: 1000 * 60 * 60 }); // shared across restarts
 
 const MAX_BUFFER_SIZE = 10000;
 const FLUSH_THRESHOLD = 400;

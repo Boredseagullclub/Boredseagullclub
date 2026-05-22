@@ -3,7 +3,7 @@ const Deposit = require('../models/Deposit');
 const User = require('../models/User');
 const mongoose = require('mongoose');
 const Decimal = require('decimal.js');
-const logger = require('../utils/logger');
+const logger = require('../logger');
 const axios = require('axios');
 
 const SLACK_WEBHOOK = process.env.SLACK_WEBHOOK_URL;

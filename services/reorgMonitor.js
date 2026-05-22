@@ -1,7 +1,7 @@
 // services/reorgMonitor.js
 const Deposit = require('../models/Deposit');
 const { ethers } = require('ethers');
-const logger = require('../utils/logger');
+const logger = require('../logger');
 
 async function watchForReorgs() {
   // Check deposits from the last 2 hours that were already credited

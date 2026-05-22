@@ -1,0 +1,34 @@
+# 🦅 Critical System & Credentials Guardrails
+.env
+.env.*
+*.env
+seagull-keyfile
+config/secrets.js
+config/keys.json
+config/walletconfig.js
+cron_errors.log
+*.log
+*.bak
+
+# 🛡️ PII & User Data Protection
+uploads/
+uploads/kyc_docs/
+*.png
+*.jpg
+*.jpeg
+
+# 📦 Machine Artifacts & Compilations
+node_modules/
+dist/
+backend/seagull-frontend
+client/build_old/
+
+# 🛠️ System Binaries & Local Executables
+mongosh
+nano
+node
+npm
+
+# 🧹 Temporary Scratchpads & Messy Duplicates
+*js7
+*jsmoo

@@ -1,6 +1,6 @@
 // services/nonceManager.js
 const Nonce = require('../models/Nonce');
-const logger = require('../utils/logger');
+const logger = require('../logger');
 
 async function getAndIncrementNonce(walletAddress, chain, session = null) {
   const filter = {
