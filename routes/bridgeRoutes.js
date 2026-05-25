@@ -299,9 +299,9 @@ router.post('/user/support/reply', async (req, res) => {
 router.get('/user/profile/:address', async (req, res) => {
   try {
     // 🦅 Look in your 'users' collection for this wallet
-    const user = await mongoose.connection.db.collection('users').findOne({ 
-      address: req.params.address 
-    });
+    const user = await mongoose.connection.db.collection('users').findOne({
+  walletAddress: req.params.address
+});
 
     if (user) {
       res.json({ success: true, user: { email: user.email } });

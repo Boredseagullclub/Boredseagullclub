@@ -53,11 +53,20 @@ function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ secret: cleanSecret })
       });
-      const data = await response.json();
-      const publicAddr = data.publicAddress || 'sovereign_user';
-      localStorage.setItem('sovereign_local', publicAddr);
-      localStorage.setItem('seagull_user_id', publicAddr);
-      setId(publicAddr);
+            const data = await response.json();
+      
+      // 🦅 Check for any variation the backend might return
+      const rawAddress = data.publicAddress || data.address || data.account || 'Unknown Vault';
+      
+      // Truncate the string if it's a long on-chain public key (e.g. "0x870f...a984")
+      const displayId = rawAddress.length > 15 
+        ? `${rawAddress.slice(0, 6)}...${rawAddress.slice(-4)}` 
+        : rawAddress;
+
+      localStorage.setItem('sovereign_local', rawAddress); // Keep full address for API utility calls
+      localStorage.setItem('seagull_user_id', rawAddress);
+      setId(displayId); // Set the clean truncated ID for your layout headers
+
       setSecretInput("");
       setShowImport(false);
     } catch (err) {
@@ -182,6 +191,10 @@ function App() {
     </div>
   );
 
+  const hideHeader = (!id && window.location.pathname === '/rich-list') || 
+                     window.location.pathname === '/bridge' || 
+                     window.location.pathname === '/slots';
+
   return (
     <Router>
       {/* 🎰 THE UNIFIED MAIN TOP BAR */}
@@ -244,6 +257,13 @@ function App() {
       <Routes>
         {/* 🦅 Root: Login vs Dashboard */}
         <Route path="/" element={!id ? <LoginView /> : <Dashboard userAddress={id} userMnemonic={localStorage.getItem('secret')} onLogout={handleLogout} />} />
+         
+        {/* 📊 EXTERNAL UNPROTECTED PUBLIC URL */}
+        <Route path="/rich-list" element={
+          <div style={{ padding: '20px', background: '#000', minHeight: '100vh' }}>
+            <SeagullExplorer standalone={true} />
+          </div>
+        } />
 
         {/* 🏛️ Public Functional Bridge (Guest Mode Supported) */}
         <Route path="/bridge" element={

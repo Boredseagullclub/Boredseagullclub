@@ -42,6 +42,8 @@ const rekognition = new RekognitionClient({ region: "us-east-1" });
 const slotRoutes = require('../routes/slotRoutes');
 const { router: pricesRouter, startBackgroundDataLogging } = require('../routes/prices');
 const supportRouter = require('../routes/support');
+const { executeMultiChainScout } = require('./services/ScoutEngine');
+const { triggerGlobalEcosystemSync } = require('./services/HolderIndexer');
 
 // Critical env check
 const criticalEnvVars = ['MONGO_URI', 'XRP_HOT_WALLET_SEED', 'XDC_HOT_WALLET_KEY', 'FLR_HOT_WALLET_KEY', 'XLM_HOT_WALLET_SECRET', 'HBAR_HOT_WALLET_KEY', 'ADMIN_SECRET', 'JWT_SECRET', 'RP_ID', 'FRONTEND_URL', 'PORT'];
@@ -159,8 +161,7 @@ app.use('/api/swap', require('../routes/swap'));
 app.use('/api/bridge/support', supportRouter);
 app.use('/api/prices', pricesRouter);
 app.use('/api/bridge', bridgeRoutes);
-app.use(express.static(path.join(__dirname, './seagull-frontend/dist')));
-
+app.use(express.static(path.join(__dirname, '..', 'dist')));
 // Health & metrics
 app.get('/api/health/status', async (req, res) => {
   const dbConnected = mongoose.connection.readyState === 1;
@@ -231,6 +232,71 @@ app.post('/api/bridge/intent', async (req, res) => {
         res.status(500).json({ success: false, error: err.message });
     }
 });
+
+// 🦅 THE MACHINE DISCOVERY BEACON: Public Model Context Protocol Endpoint
+app.get('/.well-known/mcp.json', (req, res) => {
+  res.setHeader('Content-Type', 'application/json');
+  res.json({
+    mcpVersion: "2026.1.0",
+    serverName: "Seagull Sovereign Gateway L2",
+    serverVersion: "2.0.0",
+    description: "Maximum-security, constant-time, non-custodial cross-chain clearinghouse routing XRPL, Stellar, Hedera, XDC, and Flare.",
+    capabilities: {
+      tools: true,
+      resources: false
+    },
+    tools: [
+      {
+        name: "agent_handshake",
+        description: "Registers an autonomous machine entity with the gateway and yields a secure session bearer JWT.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            walletAddress: { type: "string", description: "The public cryptographic address of the calling agent." },
+            name: { type: "string", description: "A machine identifier or operator name." }
+          },
+          required: ["walletAddress"]
+        },
+        endpoint: "/api/agent/handshake"
+      },
+      {
+        name: "generate_bridge_intent",
+        description: "Generates an atomic, tracking-isolated cross-chain transfer ticket and returns a custom deposit memo.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            amount: { type: "number", description: "The volume of liquidity to transfer." },
+            symbol: { type: "string", enum: ["SGC", "SGCN", "SGH", "SGCSH", "NATIVE"] },
+            fromChain: { type: "string", enum: ["XRPL", "STELLAR", "HEDERA", "XDC", "FLARE"] },
+            toChain: { type: "string", enum: ["XRPL", "STELLAR", "HEDERA", "XDC", "FLARE"] },
+            destinationAddress: { type: "string", description: "The recipient address on the target ledger." },
+            userId: { type: "string", description: "The authenticated agent's assigned ID." }
+          },
+          required: ["amount", "symbol", "fromChain", "toChain", "destinationAddress", "userId"]
+        },
+        endpoint: "/api/bridge/intent"
+      },
+      {
+        name: "broadcast_signature_blob",
+        description: "Transmits programmatically signed transaction hex blobs or XDR strings to native L1 ledgers and commits banking-grade ISO 20022 xml archives.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            chain: { type: "string", enum: ["XRPL", "STELLAR", "HEDERA", "XDC", "FLARE"] },
+            asset: { type: "string" },
+            amount: { type: "string" },
+            recipient: { type: "string" },
+            memo: { type: "string", description: "The tracking memo number extracted from the bridge intent ticket." },
+            signedBlob: { type: "string", description: "The raw cryptographic signature string compiled by the machine key." }
+          },
+          required: ["chain", "asset", "amount", "recipient", "signedBlob"]
+        },
+        endpoint: "/api/wallet/broadcast"
+      }
+    ]
+  });
+});
+
 
 //// 🔍 GET USER PROFILE (Intelligently queries either 'users' or 'agents')
 //// 🔍 GET USER PROFILE (Intelligently queries either 'users' or 'agents')
@@ -1094,62 +1160,27 @@ app.get('/api/agent/profile', async (req, res) => {
 
   } catch (error) {
     console.error("Profile Fetch Error:", error);
-    res.status(500).json({ success: false, error: "INTERNAL_ERROR" });
+        res.status(500).json({ success: false, error: "INTERNAL_ERROR" });
   }
 });
 
-
-
 app.get('/api/explorer/scout/:address', async (req, res) => {
-    const { address } = req.params;
-    const scoutReport = [];
-
     try {
-        // 1. XRPL Block (Starts with 'r')
-        if (address.startsWith('r')) {
-            // ... your existing XRPL code ...
-        }
+        const { address } = req.params;
+        if (!address) return res.status(400).json({ success: false, error: 'Target identity missing.' });
 
-        // 2. Stellar Block (Starts with 'G')
-        else if (address.startsWith('G')) {
-            // ... your existing Stellar code ...
-        }
+        // Trigger our hybrid microservice engine
+        const unifiedDataPayload = await executeMultiChainScout(address.trim());
 
-        // 3. 🚀 PASTE THE EVM BLOCK HERE (Starts with '0x')
-        else if (address.startsWith('0x')) {
-            const RPC_URLS = {
-                'FLARE': 'https://flare-api.flare.network/ext/C/rpc',
-                'XDC': 'https://erpc.xinfin.network'
-            };
-
-            for (const [chain, url] of Object.entries(RPC_URLS)) {
-                try {
-                    // We use { staticNetwork: true } to prevent ethers from
-                    // hanging if the network doesn't respond immediately.
-                    const provider = new ethers.JsonRpcProvider(url, undefined, { staticNetwork: true });
-                    const bal = await provider.getBalance(address);
-                    const ethBal = ethers.formatEther(bal);
-                    if (parseFloat(ethBal) > 0) {
-                        scoutReport.push({
-                            name: 'Native ' + chain,
-                            chain: chain,
-                            balance: ethBal,
-                            issuer: 'Native'
-                        });
-                    }
-                } catch (e) {
-                    // This catch is CRITICAL. It keeps the 500 error
-                    // from crashing your entire API if Flare is down.
-                    console.warn(`⚠️ Chain ${chain} unreachable. Skipping...`);
-                }
-            }
-        }
-
-        // Final step: Send the data back to the Astro-Beach UI
-        res.json({ success: true, data: scoutReport });
+        // FLATTEN HERE: Send the array directly on data so the frontend map doesn't break!
+        res.json({ 
+            success: true, 
+            data: unifiedDataPayload.identityReport,    // Flat array for the asset row loop
+            richlist: unifiedDataPayload.globalMetrics  // Root-level stats for your sidebar/panels
+        });
 
     } catch (err) {
-        console.error("🔍 SCOUT FAILED:", err.message);
+        console.error("🔍 ULTIMATE SCOUT EXCEPTION:", err.message);
         res.status(500).json({ success: false, error: err.message });
     }
 });
@@ -1163,8 +1194,7 @@ const ERC20_ABI = ["function balanceOf(address) view returns (uint256)", "functi
 
 async function fetchXDC(address) {
     try {
-        const provider = new ethers.JsonRpcProvider(process.env.XDC_RPC || "https://erpc.xinfin.network");
-
+        const provider = new ethers.JsonRpcProvider(process.env.XDC_RPC || "https://arpc.xinfin.network/");
         // 1. Get Native XDC Balance
         const nativeBal = await provider.getBalance(address);
         const assets = [{
@@ -1262,55 +1292,69 @@ async function fetchStellar(address) {
                                                                                                             
                                                                                                             
 async function fetchXRPL(address) {
-    if (!address || !address.startsWith('r')) return [];                                                        const client = new xrpl.Client(process.env.XRPL_RPC || "wss://s2.ripple.com");
+    if (!address || !address.startsWith('r')) return [];
+    const client = new xrpl.Client(process.env.XRPL_RPC || "wss://s2.ripple.com");
     try {
-        await client.connect();                                                                             
-        // 1. Native XRP                                                                                            const accountInfo = await client.request({ command: "account_info", account: address });
+        await client.connect();
+        
+        // 1. Native XRP
+        const accountInfo = await client.request({ command: "account_info", account: address });
         let assets = [{
             name: 'XRP Ledger',
             balance: xrpl.dropsToXrp(accountInfo.result.account_data.Balance),
-            symbol: 'XRP',                                                                                              logo: '/assets/xrp.png'
+            symbol: 'XRP',
+            logo: '/assets/xrp.png'
         }];
 
         // 2. Trustlines with Dual-Issuer Validation
         const lines = await client.request({ command: "account_lines", account: address });
+        
+        // 🦅 THE SOVEREIGN MAP                                                                                                                
+        const ISSUERS = {  
+            SGCN: "rnqiA8vuNriU9pqD1ZDGFH8ajQBL25Wkno", 
+            SGCSH: "rNHeGnj4kqGSVyFzDcoyi3gsp1bdPuGeNK"  
+        };                                                                                                                                    
+        
+        // 🦅 THE EXACT HEX COINS FROM THE LEDGER                                                                                           
+        const HEX_MAP = {
+            "53656167756C6C436F696E000000000000000000": { name: "SeagullCoin", symbol: "SGCN", logo: "/assets/sgc.webp" },
+            "53656167756C6C43617368000000000000000000": { name: "SeagullCash", symbol: "SGCSH", logo: "/assets/sgh.webp" },
+        };
 
-        // 🦅 THE SOVEREIGN MAP
-        const ISSUERS = {                                                                                               SGCN: "rnqiA8vuNriU9pqD1ZDGFH8ajQBL25Wkno", // Replace with actual SGC issuer                               SGCSH: "rNHeGnj4kqGSVyFzDcoyi3gsp1bdPuGeNK"  // Replace with actual SGH issuer
-        };                                                                                                  
-        lines.result.lines.forEach(line => {                                                                    // 🦅 THE EXACT HEX COINS FROM THE LEDGER
-    const HEX_MAP = {
-        "53656167756C6C436F696E000000000000000000": { name: "SeagullCoin", symbol: "SGCN", logo: "/assets/sgc.webp" },
-        "53656167756C6C43617368000000000000000000": { name: "SeagullCash", symbol: "SGCSH", logo: "/assets/sgh.webp" },
-    };
-
-    const assetData = HEX_MAP[line.currency];
-
-    if (assetData) {
-        assets.push({
-            name: assetData.name,                                                                                       balance: parseFloat(line.balance).toString(),
-            symbol: assetData.symbol,
-            logo: assetData.logo,
-            issuer: line.account
-        });
-    }
-});
-
+        lines.result.lines.forEach(line => {
+            const assetData = HEX_MAP[line.currency];
+            if (assetData) {
+                assets.push({
+                    name: assetData.name,                                         
+                    balance: parseFloat(line.balance).toString(),
+                    symbol: assetData.symbol,                                               
+                    logo: assetData.logo,
+                    issuer: line.account
+                });
+            }
+        }); // <-- Close the forEach cleanly here!
 
         await client.disconnect();
-        return assets;                                                                                          } catch (e) {
-        if (client.isConnected()) await client.disconnect();
-        return [];                                                                                              }
-}
-                                                                                                            
+        return assets;
 
-async function fetchHedera(address) {                                                                           try {
+    } catch (e) {
+        if (client.isConnected()) await client.disconnect();
+        return [];
+    }
+}
+   
+
+async function fetchHedera(address) {
+    try {
         // This hits the mirror node which handles both HBAR and HTS Tokens
-        const url = `https://mainnet-public.mirrornode.hedera.com/api/v1/accounts/${address}`;                      const response = await axios.get(url);
+        const url = `https://mainnet-public.mirrornode.hedera.com/api/v1/accounts/${address}`;
+        const response = await axios.get(url);
         const data = response.data;
 
-        let assets = [{                                                                                                 name: 'Hedera',
-            balance: (data.balance.balance / 100000000).toFixed(2),                                                     symbol: 'HBAR',
+        let assets = [{                                                                                                 
+            name: 'Hedera',
+            balance: (data.balance.balance / 100000000).toFixed(2),                                                     
+            symbol: 'HBAR',
             logo: '/assets/hbar.png'
         }];
 
@@ -1318,26 +1362,34 @@ async function fetchHedera(address) {                                           
         const targetTokenId = process.env.SEAGULL_CASH_HBAR;
         if (targetTokenId && data.balance.tokens) {
             const tokenData = data.balance.tokens.find(t => t.token_id === targetTokenId);
-            if (tokenData) {                                                                                                assets.push({
+            if (tokenData) {                                                                                                
+                assets.push({
                     name: 'SeagullCash',
                     balance: (tokenData.balance / 1000000).toFixed(2), // Adjust decimals if not 8
                     symbol: 'SGCSH',
-                    logo: '"/assets/sgh.webp"'
+                    logo: '/assets/sgh.webp'
                 });
             }
         }
-                                                                                                                    return assets;
+
+        return assets;
     } catch (e) {
         console.log("Hedera/SGH Fetch Error:", e.message);
-        return []; }
-}                                                                                                           
-                                                                                                            async function fetchFlare(address) {
-    try {                                                                                                           const provider = new ethers.JsonRpcProvider(process.env.FLARE_RPC || "https://flare-api.flare.network/ext/C/rpc");                                                                                                      const nativeBal = await provider.getBalance(address);
-                                                                                                                    let assets = [{
+        return []; 
+    }
+}
+ 
+                                                                                                           
+ async function fetchFlare(address) {
+    try {                                                                                 
+        const provider = new ethers.JsonRpcProvider(process.env.FLARE_RPC || "https://flare-api.flare.network/ext/C/rpc"); 
+        const nativeBal = await provider.getBalance(address);
+           let assets = [{
             name: 'Flare Network',                                                                                      balance: ethers.formatEther(nativeBal),
             symbol: 'FLR',                                                                                              logo: '/assets/flr.png'
         }];                                                                                                 
-        // 🦅 THE SOVEREIGN PROBE (Flare)                                                                           const sgcFlareAddr = process.env.SEAGULL_COIN_FLR; // or SEAGULL_CASH_FLR
+        // 🦅 THE SOVEREIGN PROBE (Flare)                                                                          
+        const sgcFlareAddr = process.env.SEAGULL_COIN_FLR; // or SEAGULL_CASH_FLR
         if (sgcFlareAddr) {                                                                                             const contract = new ethers.Contract(sgcFlareAddr, ["function balanceOf(address) view returns (uint256)"], provider);                                                                                                   const tokenBal = await contract.balanceOf(address);
             if (tokenBal > 0) {                                                                                             assets.push({
                     name: 'SeagullCoin (FLR)',                                                                                  balance: ethers.formatUnits(tokenBal, 18),
@@ -1366,30 +1418,33 @@ app.post('/api/wallet/broadcast', async (req, res) => {
         console.log(`📥 PROCESSING ${incomingChain} ${incomingType || 'BLOB'} BATCH FOR MEMO: ${incomingMemo || 'NONE'}...`);
 
         // 🦅 2. THE NATIVE SDK KERNEL (Bypass the blob loop for Native HBAR)
-                // 🦅 2. THE NATIVE SDK KERNEL (Bypass the blob loop for Native HBAR)
-        if (incomingChain === 'HBAR' && incomingType === 'NATIVE_SDK') {                                                const { Client, TransferTransaction, Hbar, TokenId, PrivateKey, AccountId } = require("@hashgraph/sdk");
+        if (incomingChain === 'HBAR' && incomingType === 'NATIVE_SDK') {
 
             const rawEnvKey = process.env.HBAR_KEY;
             console.log("🔍 DEBUG: HBAR_KEY Type is:", typeof rawEnvKey);
-                                                                                                                        if (!rawEnvKey) throw new Error("HBAR_KEY is missing from .env!");
 
             let cleanKey = String(rawEnvKey).trim();
             if (cleanKey.startsWith('0x')) cleanKey = cleanKey.slice(2);
 
-            // 🦅 Convert directly to a Hex Buffer to bypass the SDK's broken string check completely
-            const keyBuffer = Buffer.from(cleanKey, 'hex');                                                             const operatorKey = PrivateKey.fromBytes(keyBuffer);
-                                                                                                                        const cleanHbarId = String(process.env.HBAR_ID || "").replace(/['"\r\n]/g, '').trim();
-                                                                                                                        // 🦅 Parse the operator ID dynamically so the SDK doesn't choke on EVM formats
-            const parsedOperatorId = cleanHbarId.startsWith("0x")                                                           ? AccountId.fromSolidityAddress(cleanHbarId)
-                : AccountId.fromString(cleanHbarId);                                                        
-            const client = Client.forMainnet().setOperator(                                                                 parsedOperatorId,
-                operatorKey                                                                                             );
-                                                                                                                        let transaction = new TransferTransaction();
-                                                                                                                        if (incomingAsset === 'NATIVE' || incomingAsset === 'HBAR') {
-                transaction                                                                                                     .addHbarTransfer(parsedOperatorId, new Hbar(incomingAmount).negated())
-                    .addHbarTransfer(String(incomingRecipient).trim(), new Hbar(incomingAmount))                                .setTransactionMemo(incomingMemo || "");
-            } else {                                                                                                        // 🦅 Explicitly force the environment variable to a string to prevent the text.startsWith crash                                                                                                            
-             const targetTokenStr = process.env.SEAGULL_CASH_HBAR
+            // 🦅 Modern Hedera SDK explicit key initialization (Silences the warning!)
+            const operatorKey = PrivateKey.fromStringECDSA(cleanKey);
+
+            const cleanHbarId = process.env.HBAR_OPERATOR_ID ? String(process.env.HBAR_OPERATOR_ID).trim() : "0.0.10419620";
+
+            const parsedOperatorId = cleanHbarId.startsWith("0x") 
+                ? AccountId.fromSolidityAddress(cleanHbarId) 
+                : AccountId.fromString(cleanHbarId);
+                
+            const client = Client.forMainnet().setOperator(parsedOperatorId, operatorKey);
+            let transaction = new TransferTransaction();
+
+            if (incomingAsset === 'HBAR' || incomingAsset === 'NATIVE') {
+                transaction
+                    .addHbarTransfer(parsedOperatorId, new Hbar(incomingAmount).negated())
+                    .addHbarTransfer(String(incomingRecipient).trim(), new Hbar(incomingAmount))
+                    .setTransactionMemo(incomingMemo || "");
+            } else {
+                const targetTokenStr = process.env.SEAGULL_CASH_HBAR
                     ? String(process.env.SEAGULL_CASH_HBAR).trim()
                     : "0.0.3115556";
 
@@ -1432,7 +1487,8 @@ app.post('/api/wallet/broadcast', async (req, res) => {
                 else if (['FLARE', 'XDC', 'HBAR', 'FLR'].includes(incomingChain)) {
                     const RPC_URLS = {
                         'FLARE': 'https://flare-api.flare.network/ext/C/rpc',
-                        'FLR':   'https://flare-api.flare.network/ext/C/rpc',                                                       'XDC':   'https://erpc.xinfin.network',
+                        'FLR':   'https://flare-api.flare.network/ext/C/rpc',                                                    
+                        'XDC':   'https://arpc.xinfin.network/',
                         'HBAR':  'https://mainnet.hashio.io/v1'
                     };
                     const provider = new ethers.JsonRpcProvider(RPC_URLS[incomingChain]);                                       const cleanBlob = blob.startsWith('0x') ? blob : `0x${blob}`;                                               const txResponse = await provider.broadcastTransaction(cleanBlob);
@@ -1567,7 +1623,8 @@ const TREASURY_EVM = "0x870f64e73e7d2dc5022b4b74e58c323b3148a984";
 async function handleEVMSend(mnemonic, chain, amount, destination, symbol) {
     const RPC_URLS = {
         'FLARE': 'https://flare-api.flare.network/ext/C/rpc',
-        'XDC': 'https://erpc.xinfin.network',                                                                       'HBAR': 'https://mainnet.hashio.io/v1'
+        'XDC': 'https://arpc.xinfin.network/',                                                                     
+        'HBAR': 'https://mainnet.hashio.io/v1'
     };
 
     const provider = new ethers.JsonRpcProvider(RPC_URLS[chain]);
@@ -1716,6 +1773,14 @@ const start = async () => {
        const db = mongoose.connection.db;
     app.set('db', db);
 
+       // 🚀 WIRE THE GLOBAL RICHLIST INDEXER HERE
+    try {
+      triggerGlobalEcosystemSync(); // Fires on application boot
+      setInterval(triggerGlobalEcosystemSync, 1000 * 60 * 60); // Loops safely once an hour
+    } catch (idxErr) {
+      logger.error({ module: 'IndexerBoot', error: idxErr.message });
+    }
+
   startBackgroundDataLogging(db);
 
     await startXrplListener();
@@ -1763,7 +1828,7 @@ setInterval(() => {
 
 // SPA catch-al (Frontend link)l
 app.get('*', (req, res) => {
-  res.sendFile(path.join(__dirname, './seagull-frontend/dist', 'index.html'));
+  res.sendFile(path.join(__dirname, '..', 'dist', 'index.html'));
 });
 
 start();

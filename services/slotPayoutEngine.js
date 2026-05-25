@@ -101,7 +101,7 @@ async function processSlotMachineWinners() {
       } else if (sourceChain === 'XDC') {
         if (!process.env.XDC_PRIVATE_KEY) throw new Error("XDC_PRIVATE_KEY missing from environment space.");
 
-        const provider = new ethers.JsonRpcProvider(process.env.XDC_RPC_URL || 'https://rpc.ankr.com/xdc');
+        const provider = new ethers.JsonRpcProvider(process.env.XDC_RPC_URL || 'https://erpc.xinfin.network');
         const treasuryWallet = new ethers.Wallet(process.env.XDC_PRIVATE_KEY.trim(), provider);
         
         const contractAddress = '0xd38109F587bd0326CAd60a18CF3C1ECD546809a6';

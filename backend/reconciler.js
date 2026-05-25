@@ -231,10 +231,10 @@ async function getVerifiedOnChainBalances() {
       const chainId = chain === 'XDC' ? 50 : 14;
       
       // Explicit staticNetwork passing terminates any downstream runtime ENS name-discovery routines
-      const provider = new ethers.JsonRpcProvider(rpcUrl, undefined, {
-        staticNetwork: ethers.Network.from(chainId),
-        batchMaxCount: 1
-      });
+      const provider = new ethers.JsonRpcProvider(rpcUrl, null, {
+  staticNetwork: ethers.Network.from(chainId),
+  batchMaxCount: 1
+});
 
       // Native balance
       const nativeBal = await provider.getBalance(depositAddr);
@@ -288,7 +288,8 @@ async function getVerifiedOnChainBalances() {
       privateKeyString = String(rawKey).trim();
     }
     
-    const parsedKey = PrivateKey.fromString(privateKeyString);
+    const parsedKey = PrivateKey.fromStringECDSA(privateKeyString);
+
     const hederaClient = HederaClient.forMainnet().setOperator(operatorId, parsedKey);
 
     const balance = await new AccountBalanceQuery()

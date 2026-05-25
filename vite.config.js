@@ -1,8 +1,18 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
+import { nodePolyfills } from 'vite-plugin-node-polyfills'; // <-- Add this line
 
 export default defineConfig({
-  plugins: [react()],
+  plugins: [
+    react(),
+    nodePolyfills({
+      globals: {
+        Buffer: true, // Forces 'Buffer' to be globally defined on the window object
+        global: true,
+        process: true,
+      },
+    }),
+  ],
   server: {
     host: '0.0.0.0',
     port: 5173,
@@ -22,7 +32,7 @@ export default defineConfig({
     hmr: {
       clientPort: 443,
       host: 'seagull-xlm.xyz',
-      protocol: 'wss'
+      protocol: 'wss'                                                            
     }
   }
 });

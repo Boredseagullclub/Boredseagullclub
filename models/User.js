@@ -52,9 +52,9 @@ const userSchema = new mongoose.Schema({
 
   // ─── NEW: Temporary WebAuthn challenge storage (with auto-expiry) ────────
   pendingWebauthnChallenge: { type: String, sparse: true },
-  challengeExpiresAt: { 
-    type: Date, 
-    sparse: true, 
+  challengeExpiresAt: {
+    type: Date,
+    sparse: true,
     expires: '5m'  // MongoDB auto-deletes after 5 minutes
   },
 
@@ -80,19 +80,33 @@ const userSchema = new mongoose.Schema({
   loginCount: { type: Number, default: 0 },
   lastBalanceUpdate: Date,
 
-}, { 
+  // ─── INSTITUTIONAL COMPLIANCE & KYC LAYER ───────────────────────────
+  kyc: {
+    status: {
+      type: String,
+      enum: ['none', 'pending', 'approved', 'rejected', 'expired'],
+      default: 'none',
+      index: true
+    },
+    tier: { type: Number, default: 0 }, 
+    providerReferenceId: { type: String, sparse: true }, 
+    verifiedAt: Date,
+    riskScore: { type: Number, min: 0, max: 100, default: 0 }, 
+    isSanctioned: { type: Boolean, default: false, index: true }, 
+    amlCountry: { type: String, uppercase: true, trim: true, length: 2 }, 
+  },
+
+}, {
   timestamps: true,
-  optimisticConcurrency: true 
+  optimisticConcurrency: true
 });
 
-// Indexes
-userSchema.index({ "passkeys.credentialID": 1 }, { unique: true });
+// ─── INDEX MANAGEMENT ────────────────────────────────────────────────
+// Kept only your compound manual indexes. Single duplicates removed.
 userSchema.index({ processing: 1, processingType: 1, processingStartedAt: 1 });
-userSchema.index({ retryCount: 1 });
 userSchema.index({ publicAddress: 1, nonce: 1 });
-// Add after existing indexes
-userSchema.index({ pendingWebauthnChallenge: 1 });               // fast find by challenge (rarely needed)
 
+// ─── BALANCING CORE METHOD ───────────────────────────────────────────
 userSchema.methods.updateBalance = function(tokenSymbol, deltaAmount) {
   const current = this.balances.get(tokenSymbol)
     ? new Decimal(this.balances.get(tokenSymbol).toString())

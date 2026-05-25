@@ -6,7 +6,7 @@ const axios = require('axios');
 const mongoose = require('mongoose'); 
 
 const RPC_POOL = {
-  XDC: 'https://rpc.ankr.com/xdc',
+  XDC: 'https://erpc.xinfin.network',
   FLARE: 'https://flare-api.flare.network/ext/C/rpc',
   STELLAR: 'https://horizon.stellar.org',
   HEDERA: 'https://mainnet.hashio.io/api'
