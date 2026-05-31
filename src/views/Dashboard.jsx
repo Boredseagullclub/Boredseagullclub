@@ -3,39 +3,49 @@ import axios from 'axios';
 import BridgeWidget from '../components/BridgeWidget';
 import KycModal from '../components/KycModal';
 
-
-const Dashboard = ({ userAddress, isStandalone }) => { // 🦅 Pulling props from App.jsx
+const Dashboard = ({ userAddress, isStandalone }) => {
   const [balances, setBalances] = useState([]);
-  const [kycStatus, setKycStatus] = useState('TIER_0_UNVERIFIED'); // 🦅 Added missing state tracker
+  const [kycStatus, setKycStatus] = useState('TIER_0_UNVERIFIED');
   const [loading, setLoading] = useState(true);
   const [showKycModal, setShowKycModal] = useState(false);
-  
-    // 🦅 PATH PRIORITY: Use the prop if passed, fallback to standard local storage keys
+
+  // 🦅 Grab the raw profile session indicator straight from local storage
   const rawAddress = userAddress || localStorage.getItem('sovereign_local') || localStorage.getItem('seagull_user_id') || 'GUEST_MODE';
-  
-  // Format long public hashes beautifully for your mobile layout views
-  const address = (rawAddress.length > 25 && rawAddress !== "GUEST_MODE")
-    ? `${rawAddress.slice(0, 6)}...${rawAddress.slice(-4)}`
-    : rawAddress;
+
+  // 🦅 CLEAN LINKAGE: Fallback rows are now safe because we let rawAddress flow dynamically.
+  // We read the address directly. No tracking loops overriding different user logins.
+  const address = rawAddress;
+
+  // Format header representation safely based on the resolved address variable
+  const displayAddress = (address.length > 25 && address !== "GUEST_MODE")
+    ? `${address.slice(0, 6)}...${address.slice(-4)}`
+    : address;
 
   const mnemonic = localStorage.getItem('secret') || localStorage.getItem('seagull_mnemonic');
 
-
   useEffect(() => {
     const fetchBalancesAndCompliance = async () => {
-      // 🦅 GUEST BYPASS: Don't call the API if it's a guest
-      if (!address || address === "GUEST_MODE") {
+      if (!rawAddress || rawAddress === "GUEST_MODE") {
         setLoading(false);
         return;
-      } 
+      }
 
       try {
-        // 1. Fetch Balances
-        const resBalances = await axios.get(`/api/balances/${address}`);
-        setBalances(resBalances.data); 
+        const cachedXrpl = localStorage.getItem('cached_xrpl_address') || '';
+        const cachedStellar = localStorage.getItem('cached_stellar_address') || '';
+        const cachedHedera = localStorage.getItem('cached_hedera_id') || ''; // 🦅 Pulled Hedera into the pipeline
 
-        // 2. Fetch compliance tier data directly from the dynamic profile status API
-        const resProfile = await axios.get(`/api/agent/profile?id=${address}`);
+        // 🦅 Always query using rawAddress so the backend backstop catch block can process 'sovereign_user'
+        const resBalances = await axios.get(`/api/balances/${rawAddress}`, {
+          headers: {
+            'x-native-xrpl': cachedXrpl,
+            'x-native-stellar': cachedStellar,
+            'x-native-hedera': cachedHedera // 🦅 Passing Hedera straight to the backend
+          }
+        });
+        setBalances(resBalances.data);
+
+        const resProfile = await axios.get(`/api/agent/profile?id=${rawAddress}`);
         if (resProfile.data && resProfile.data.success) {
           setKycStatus(resProfile.data.kycStatus);
         }
@@ -44,10 +54,10 @@ const Dashboard = ({ userAddress, isStandalone }) => { // 🦅 Pulling props fro
       } finally {
         setLoading(false);
       }
-    }; 
+    };
 
     fetchBalancesAndCompliance();
-  }, [address]); 
+  }, [rawAddress]);
 
   return (
     <div className="min-h-screen bg-black text-white p-6 md:p-12">
@@ -59,8 +69,7 @@ const Dashboard = ({ userAddress, isStandalone }) => { // 🦅 Pulling props fro
               "PUBLIC ACCESS NODE"
             ) : (
               <>
-                <span>CONNECTED: {address}</span>
-                {/* 🛡️ DYNAMIC COMPLIANCE TIER BADGES */}
+                <span>CONNECTED: {displayAddress}</span>
                 {kycStatus === 'TIER_1_VERIFIED' ? (
                   <span style={{ color: '#00ffcc', border: '1px solid #00ffcc', padding: '1px 8px', borderRadius: '4px', fontSize: '10px', fontWeight: 'bold' }}>
                     👑 TIER 1 VERIFIED
@@ -82,35 +91,40 @@ const Dashboard = ({ userAddress, isStandalone }) => { // 🦅 Pulling props fro
                       cursor: 'pointer',
                       background: 'rgba(255, 51, 83, 0.05)'
                     }}
-                    title="Click to upgrade your compliance tier"
                   >
                     ⚠️ TIER 0 UNVERIFIED (CLICK TO UPGRADE)
                   </span>
                 )}
               </>
             )}
-          </p> 
+          </p>
         </div>
-      </header> 
+      </header>
 
-      <main className="max-w-7xl mx-auto flex flex-col items-center">
-        {/* 🦅 THE GATE FIX: Don't show loading if it's a Guest */}
-        {loading && address !== "GUEST_MODE" ? (
-          <div className="text-zinc-600 font-bold animate-pulse uppercase font-mono">Scanning Assets...</div>
+      <main className="max-w-7xl mx-auto flex flex-col items-center w-full">
+        {loading && address === "sovereign_user" ? (
+          <div className="text-zinc-600 font-bold animate-pulse uppercase font-mono py-12">
+            Scanning Assets...
+          </div>
         ) : (
           <div className="w-full max-w-lg">
             <BridgeWidget
               userAddress={address}
               userMnemonic={mnemonic}
               balances={balances}
-              userWallets={balances}
+              userWallets={{
+                evm: address,
+                xrpl: localStorage.getItem('cached_xrpl_address') || balances.find(b => b.chain === 'XRPL')?.address || '',
+                xlm: localStorage.getItem('cached_stellar_address') || balances.find(b => b.chain === 'XLM')?.address || '',
+                stellar: localStorage.getItem('cached_stellar_address') || balances.find(b => b.chain === 'XLM')?.address || '',
+                hedera: localStorage.getItem('cached_hedera_id') || balances.find(b => b.chain === 'HBAR')?.address || '' // 🦅 Explicit Hedera binding for the widget
+              }}
               kycStatus={kycStatus}
             />
           </div>
         )}
       </main>
 
-      {/* Render the KYC verification modal dynamically */}
       {showKycModal && (
         <KycModal
           seagullNetId={address}
@@ -124,6 +138,6 @@ const Dashboard = ({ userAddress, isStandalone }) => { // 🦅 Pulling props fro
       )}
     </div>
   );
-}; 
+};
 
 export default Dashboard;

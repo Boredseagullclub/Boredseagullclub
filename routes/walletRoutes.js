@@ -1,4 +1,3 @@
-// routes/walletRoutes.js
 const express = require('express');
 const router = express.Router();
 const mongoose = require('mongoose');
@@ -57,8 +56,8 @@ router.post(
         const user = await User.findById(req.user.userId).session(session);
         if (!user) throw new Error('User not found');
 
-        const currentBal = user.balances?.get(token) 
-          ? new Decimal(user.balances.get(token).toString()) 
+        const currentBal = user.balances?.get(token)
+          ? new Decimal(user.balances.get(token).toString())
           : new Decimal(0);
 
         if (currentBal.lt(decAmount)) {
@@ -103,7 +102,7 @@ router.post(
 );
 
 // Get balances
-router.get('/balances', 
+router.get('/balances',
   (req, res, next) => req.app.locals.authenticateJWT(req, res, next),
   async (req, res) => {
     const user = await User.findById(req.user.userId);

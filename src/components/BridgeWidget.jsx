@@ -534,8 +534,8 @@ const feeData = await provider.getFeeData();
             value: "1000000000"
           }
         });
-
-        const result = await client.submitAndWait(wallet.sign(tx).tx_blob);
+ 
+      const result = await client.submitAndWait(wallet.sign(tx).tx_blob);
         await client.disconnect();
 
         if (result.result.meta.TransactionResult === "tesSUCCESS") {
@@ -605,17 +605,17 @@ const feeData = await provider.getFeeData();
 
 
   const walletRows = [
-    { name: 'XRP Native',          asset: 'XRP',   chain: 'XRPL',  icon: '/assets/xrp.png' },
-    { name: 'SeagullCoin (XRPL)',  asset: 'SGCN',  chain: 'XRPL',  icon: '/assets/sgc.webp' },
-    { name: 'SeagullCash (XRPL)',  asset: 'SGCSH', chain: 'XRPL',  icon: '/assets/sgh.webp' },
-    { name: 'XLM Native',          asset: 'XLM',   chain: 'XLM',   icon: '/assets/xlm.png' },
-    { name: 'SeagullCash (XLM)',   asset: 'SeagullCash', chain: 'XLM',   icon: '/assets/sgh.webp' },
-    { name: 'HBAR Native',         asset: 'HBAR',  chain: 'HBAR',  icon: '/assets/hbar.png' },
-    { name: 'SeagullCash (HBAR)',  asset: 'SGCSH', chain: 'HBAR',  icon: '/assets/sgh.webp' },
-    { name: 'XDC Native',          asset: 'XDC',   chain: 'XDC',   icon: '/assets/xdc.png' },
-    { name: 'SeagullCoin (XDC)',   asset: 'SGC',   chain: 'XDC',   icon: '/assets/sgc.webp' },
-    { name: 'FLR Native',          asset: 'FLR',   chain: 'FLARE', icon: '/assets/flr.png' },
-    { name: 'SeagullCoin (FLR)',   asset: 'SGC',   chain: 'FLARE', icon: '/assets/sgc.webp' }
+    { name: 'XRP',          asset: 'XRP',   chain: 'XRPL',  icon: 'https://files.catbox.moe/6j4qjr.png' },
+    { name: 'SeagullCoin (XRPL)',  asset: 'SGCN',  chain: 'XRPL',  icon: 'https://files.catbox.moe/utrpfc.png' },
+    { name: 'SeagullCash (XRPL)',  asset: 'SGCSH', chain: 'XRPL',  icon: 'https://files.catbox.moe/w3cets.png' },
+    { name: 'XLM',          asset: 'XLM',   chain: 'XLM',   icon: 'https://files.catbox.moe/f1czvd.png' },
+    { name: 'SeagullCash (XLM)',   asset: 'SeagullCash', chain: 'XLM',   icon: 'https://files.catbox.moe/w3cets.png' },
+    { name: 'HBAR',         asset: 'HBAR',  chain: 'HBAR',  icon: 'https://files.catbox.moe/5eljf1.png' },
+    { name: 'SeagullCash (HBAR)',  asset: 'SGCSH', chain: 'HBAR',  icon: 'https://files.catbox.moe/w3cets.png' },
+    { name: 'XDC',          asset: 'XDC',   chain: 'XDC',   icon: 'https://files.catbox.moe/6k7cu1.jpg' },
+    { name: 'SeagullCoin (XDC)',   asset: 'SGC',   chain: 'XDC',   icon: 'https://files.catbox.moe/utrpfc.png' },
+    { name: 'FLR',          asset: 'FLR',   chain: 'FLARE', icon: 'https://files.catbox.moe/q0eg3r.png' },
+    { name: 'SeagullCoin (FLR)',   asset: 'SGC',   chain: 'FLARE', icon: 'https://files.catbox.moe/utrpfc.png' }
   ];
 
   if (!balances || !Array.isArray(balances)) {
@@ -671,7 +671,9 @@ const feeData = await provider.getFeeData();
 
 
             🔴 LOGOUT
-          </button>
+
+
+</button>
         )}
       </div>
 
@@ -843,59 +845,36 @@ const feeData = await provider.getFeeData();
         </div>
       )}
 
-     {activeTab === 'SOVEREIGN WALLET' && (
+         {activeTab === 'SOVEREIGN WALLET' && (
   <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', maxHeight: '400px', overflowY: 'auto' }}>
     {walletRows.map(net => {
       const rowAsset = net.asset?.toUpperCase() || '';
       const chainUpper = net.chain?.toUpperCase() || '';
 
-
-             const factualEntry = balances.find(b => {
+      const factualEntry = balances.find(b => {
         const apiSym = b.symbol?.toUpperCase() || '';
-
-        // 🦅 1. NATIVE GAS LAYERS (Remains Independent)
-        if (rowAsset === 'XRP' || rowAsset === 'XLM') {
-          return apiSym === rowAsset && b.chain === net.chain;
-        }
-
-        // 🦅 2. XRPL TOKEN LAYERS (Now Strictly Separated)
-        const matchXRP = (chainUpper === 'XRPL' && (
-          // Logic for SeagullCoin Row
-          ((rowAsset === 'SGCN' || rowAsset === 'SGC') && (apiSym === 'SGCN' || apiSym === 'SGC' || apiSym === 'SEAGULLCOIN')) ||
-          // Logic for SeagullCash Row
-          ((rowAsset === 'SGCSH' || rowAsset === 'SGH') && (apiSym === 'SGCSH' || apiSym === 'SGH' || apiSym === 'SEAGULLCASH'))
-        ));
-
-        // 🦅 3. STELLAR TOKEN LAYERS (Preserved Working Logic)
-        const matchXLM = (chainUpper === 'XLM' &&
-          (apiSym === 'SGCSH' || apiSym === 'SEAGULLCASH' || apiSym === 'SGH') &&
-          (rowAsset === 'SEAGULLCASH' || rowAsset === 'SGH'));
-
-        // 🦅 4. EVM/HBAR LAYERS (Preserved)
-        const matchEVM = (['XDC', 'HBAR', 'FLARE'].includes(chainUpper) &&
-          (apiSym === rowAsset || apiSym.includes(rowAsset) || rowAsset.includes(apiSym)));
-
-        return (matchEVM || matchXRP || matchXLM) && b.chain === net.chain;
+        const matchXRP = (chainUpper === 'XRPL' && (apiSym === 'SGCN' || apiSym === 'SEAGULLCOIN' || apiSym === 'SGC') && (rowAsset === 'SGCN' || rowAsset === 'SGC' || rowAsset === 'XRP'));
+        const matchXLM = (chainUpper === 'XLM' && (apiSym === 'SGCSH' || apiSym === 'SEAGULLCASH' || apiSym === 'SGH') && (rowAsset === 'SEAGULLCASH' || rowAsset === 'SGH' || rowAsset === 'XLM'));
+        const matchEVM = (['XDC', 'HBAR', 'FLARE'].includes(chainUpper) && (apiSym === rowAsset || apiSym.includes(rowAsset) || rowAsset.includes(apiSym)));
+        return (matchEVM || matchXRP || matchXLM || apiSym === rowAsset) && b.chain === net.chain;
       });
 
       // 🦅 FIXED: Prevents 0x fallback for Trust Line rows by forcing native mapping
-      let addr = factualEntry?.address;
+      let addr = factualEntry?.address; 
 
       if (!addr) {
         if (chainUpper === 'XRPL') {
-          addr = net.wallets?.xrpl; // Map to r-address for XRPL tokens                                                                                           } else if (chainUpper === 'XLM') {
-          addr = net.wallets?.stellar; // Map to G-address for XLM tokens                                                                                         } else {
+          addr = net.wallets?.xrpl; // Map to r-address for XRPL tokens
+        } else if (chainUpper === 'XLM') {
+          addr = net.wallets?.stellar; // Map to G-address for XLM tokens
+        } else {
           addr = userAddress; // Standard fallback for EVM/HBAR
         }
       }
 
-     const trustlineExists = hasActiveTrustline(
-  net.chain,
-  (rowAsset === 'SGCN' || rowAsset === 'SGC' || rowAsset === 'SEAGULLCOIN') ? 'SEAGULLCOIN' : 'SEAGULLCASH'
-);
       const bal = factualEntry ? factualEntry.balance : '0.00';
       const balanceNum = parseFloat(bal) || 0;
-
+      const trustlineExists = hasActiveTrustline(net.chain, rowAsset);
 
       let buttonText = 'SEND';
       let isActive = true;
@@ -909,7 +888,8 @@ const feeData = await provider.getFeeData();
             buttonText = 'ACTIVATE';
             isActive = false;
           }
-        } else {                                                                                                                                                    if (factualEntry || trustlineExists) {
+        } else {
+          if (factualEntry || trustlineExists) {
             buttonText = 'SEND';
             isActive = true;
           } else {
@@ -943,20 +923,23 @@ const feeData = await provider.getFeeData();
               <button
                 onClick={() => handleCopy(addr)}
                 style={{
-                  borderColor: '#00e5ff',                                                                                                                                   color: '#00e5ff',
+                  borderColor: '#00e5ff',
+                  color: '#00e5ff',
                   background: 'transparent',
                   cursor: addr ? 'pointer' : 'not-allowed',
                   fontSize: '10px',
-                  padding: '4px 8px',                                                                                                                                       borderRadius: '4px'
+                  padding: '4px 8px',
+                  borderRadius: '4px'
                 }}
               >
-                COPY
+                                COPY
               </button>
 
               <button
   onClick={() => {
     if (buttonText === 'SEND') {
-      setSelectedAsset({ ...net, currentBalance: bal });                                                                                                        setShowSendModal(true);
+      setSelectedAsset({ ...net, currentBalance: bal });
+      setShowSendModal(true);
     } else if (buttonText === 'ACTIVATE') {
       setSelectedAsset({ ...net, activationAddress: addr });
       setShowActivateModal(true);
@@ -965,7 +948,7 @@ const feeData = await provider.getFeeData();
     }
   }}
   disabled={isProcessingTrust === `${net.chain}_${(rowAsset === 'SGCN' || rowAsset === 'SGC' || rowAsset === 'SEAGULLCOIN') ? 'SeagullCoin' : 'SeagullCash'}`}
-  style={{
+                style={{
     ...sendBtnStyle,
     background: isActive ? '#00ffcc' : (isProcessingTrust ? '#444' : '#00d4ff'),
     color: '#000',
@@ -976,24 +959,21 @@ const feeData = await provider.getFeeData();
     gap: '5px'
   }}
 >
-  {isProcessingTrust === `${net.chain}_${(rowAsset === 'SGCN' || rowAsset === 'SGC' || rowAsset === 'SEAGULLCOIN') ? 'SeagullCoin' : 'SeagullCash'}` ? (
+{isProcessingTrust === `${net.chain}_${(rowAsset === 'SGCN' || rowAsset === 'SGC' || rowAsset === 'SEAGULLCOIN') ? 'SeagullCoin' : 'SeagullCash'}` ? (
     <>
       <span className="spinner"></span> PROCESSING...
     </>
   ) : (
     buttonText
-  )}
-</button>
+  )}                                                                                                                                   
+ </button>
             </div>
           </div>
         </div>
       );
     })}
   </div>
-)}
-
-
-
+)}              
 
 
             {activeTab === 'TICKETS' && (
@@ -1193,8 +1173,7 @@ const feeData = await provider.getFeeData();
           </div>
         </div>
       )}
-
-       {/* 🦅 GLOBAL SUCCESS MODAL */}                                                                       {showSuccess && (
+{/* 🦅 GLOBAL SUCCESS MODAL */}                                                                       {showSuccess && (
   <div style={overlayStyle} onClick={() => setShowSuccess(false)}>
     <div style={{ ...modalStyle, borderColor: '#00ffcc' }} onClick={(e) => e.stopPropagation()}>
       <div style={{ fontSize: '40px', marginBottom: '10px' }}>✅</div>

@@ -1,4 +1,5 @@
 const express = require('express');
+const { ethers } = require('ethers');
 const router = express.Router();
 const {
   generateRegistrationOptions,
@@ -190,5 +191,39 @@ router.post('/passkey/login/finish', async (req, res) => {
     res.status(400).json({ error: err.message });
   }
 });
+
+// 5. Import Recovery Phrase (The Missing Route)
+router.post('/import', async (req, res) => {
+  try {
+    const { secret } = req.body;
+    
+    if (!secret) {
+      return res.status(400).json({ error: 'Secret phrase is required' });
+    }
+
+    // Derive the standard EVM address from the user's 12/24 words
+    const wallet = ethers.Wallet.fromPhrase(secret.trim());
+    const publicAddress = wallet.address.toLowerCase();
+
+    // Ensure the user exists in the database
+    let user = await User.findOneAndUpdate(
+      { publicAddress },
+      { $setOnInsert: { publicAddress, balances: {} } },
+      { upsert: true, new: true }
+    );
+
+    // Send the real address back to the frontend so it stops using "sovereign_user"
+    res.json({ 
+      success: true, 
+      address: publicAddress,
+      token: signToken(user) 
+    });
+
+  } catch (err) {
+    console.error("Import Error:", err.message);
+    res.status(400).json({ error: 'Invalid recovery phrase format' });
+  }
+});
+
 
 module.exports = router;

@@ -9,6 +9,11 @@ import BridgeWidget from './components/BridgeWidget';
 import Swap from './components/Swap';
 import ChartsAndSwap from './components/ChartsAndSwap'; // 🦅 Imported chart assembly safely
 import { X, ExternalLink } from 'lucide-react';
+import * as xrpl from 'xrpl';
+import * as StellarSdk from '@stellar/stellar-sdk';
+import * as bip39 from 'bip39';
+import { derivePath } from 'ed25519-hd-key';
+
 
 function App() {
   const [id, setId] = useState(localStorage.getItem('sovereign_local'));
@@ -37,7 +42,7 @@ function App() {
     }
   };
 
-  const handleImport = async () => {
+    const handleImport = async () => {
     if (!secretInput) return alert("🦅 Enter a seed!");
     const cleanSecret = secretInput.trim();
     const wordCount = cleanSecret.split(/\s+/).length;
@@ -48,32 +53,41 @@ function App() {
 
     try {
       localStorage.setItem('secret', cleanSecret);
+
+      // 🦅 1. CLIENT-SIDE DERIVATION: Instantly generate the XRPL and XLM addresses
+      const xrplWallet = xrpl.Wallet.fromMnemonic(cleanSecret);
+      localStorage.setItem('cached_xrpl_address', xrplWallet.address);
+
+      const seed = await bip39.mnemonicToSeed(cleanSecret);
+      const derived = derivePath("m/44'/148'/0'", seed.toString('hex'));
+      const keypair = StellarSdk.Keypair.fromRawEd25519Seed(derived.key);
+      localStorage.setItem('cached_stellar_address', keypair.publicKey());
+
+      // 🦅 2. BACKEND SYNC: Your existing logic to fetch the EVM identity
       const response = await fetch('/api/auth/import', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ secret: cleanSecret })
       });
-            const data = await response.json();
-      
-      // 🦅 Check for any variation the backend might return
+      const data = await response.json();
+
       const rawAddress = data.publicAddress || data.address || data.account || 'Unknown Vault';
-      
-      // Truncate the string if it's a long on-chain public key (e.g. "0x870f...a984")
-      const displayId = rawAddress.length > 15 
-        ? `${rawAddress.slice(0, 6)}...${rawAddress.slice(-4)}` 
-        : rawAddress;
 
-      localStorage.setItem('sovereign_local', rawAddress); // Keep full address for API utility calls
+      localStorage.setItem('sovereign_local', rawAddress);
       localStorage.setItem('seagull_user_id', rawAddress);
-      setId(displayId); // Set the clean truncated ID for your layout headers
-
+      
+      // Pass the raw EVM address straight into the state so the balances endpoint doesn't fail
+      setId(rawAddress);
       setSecretInput("");
       setShowImport(false);
     } catch (err) {
-      localStorage.setItem('sovereign_local', 'sovereign_user');
-      setId('sovereign_user');
+      // 🦅 3. THE FIX: No more "sovereign_user" dummy trap. It fails loudly now.
+      alert("🦅 Login Failed. Check connection or seed phrase.");
+      localStorage.removeItem('sovereign_local');
+      setId(null);
     }
   };
+
 
   const handleLogout = () => {
     localStorage.clear();
@@ -191,8 +205,8 @@ function App() {
     </div>
   );
 
-  const hideHeader = (!id && window.location.pathname === '/rich-list') || 
-                     window.location.pathname === '/bridge' || 
+  const hideHeader = (!id && window.location.pathname === '/rich-list') ||
+                     window.location.pathname === '/bridge' ||
                      window.location.pathname === '/slots';
 
   return (
@@ -257,7 +271,7 @@ function App() {
       <Routes>
         {/* 🦅 Root: Login vs Dashboard */}
         <Route path="/" element={!id ? <LoginView /> : <Dashboard userAddress={id} userMnemonic={localStorage.getItem('secret')} onLogout={handleLogout} />} />
-         
+
         {/* 📊 EXTERNAL UNPROTECTED PUBLIC URL */}
         <Route path="/rich-list" element={
           <div style={{ padding: '20px', background: '#000', minHeight: '100vh' }}>

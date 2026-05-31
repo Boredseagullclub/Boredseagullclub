@@ -2,16 +2,24 @@ import { useState, useEffect } from 'react';
 import io from 'socket.io-client';
 import axios from 'axios';
 
-const API_BASE = 'https://www.seagull-xlm.xyz/api';
+// 🦅 DYNAMIC PATH RESOLVER: Uses the current hostname your phone is connecting to
+const HOST = window.location.hostname === 'localhost' || window.location.hostname.startsWith('192.') 
+  ? '' 
+  : `${window.location.protocol}//${window.location.host}`;
+
+const API_BASE = `${HOST}/api`;
 
 export const useBridge = (publicAddress) => {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    if (!publicAddress) return;
+    // 🦅 Prevent running requests with invalid or dummy string states
+    if (!publicAddress || publicAddress === 'sovereign_user' || publicAddress === 'GUEST_MODE') {
+      setLoading(false);
+      return;
+    }
 
-    // 1. Fetch initial state from the "Tank" Backend
     const fetchUser = async () => {
       try {
         const res = await axios.get(`${API_BASE}/user/${publicAddress}`);
@@ -25,8 +33,8 @@ export const useBridge = (publicAddress) => {
 
     fetchUser();
 
-    // 2. Listen for Live "Heartbeats" (Swaps/KYC updates)
-    const socket = io('https://www.seagull-xlm.xyz');
+    // Listen for Live "Heartbeats" relative to the connected server host
+    const socket = io(HOST || window.location.origin);
     socket.emit('join', publicAddress);
 
     socket.on('KYC_UPDATE', (data) => {
@@ -42,4 +50,3 @@ export const useBridge = (publicAddress) => {
 
   return { user, loading };
 };
-

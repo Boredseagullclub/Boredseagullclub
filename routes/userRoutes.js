@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const User = require('../models/User'); 
+const User = require('../models/User');
 
 // 🦅 Fetch full sovereign profile by MongoDB ID
 router.get('/:id', async (req, res) => {
@@ -10,7 +10,7 @@ router.get('/:id', async (req, res) => {
       return res.status(404).json({ error: 'Sovereign ID not found in Tank' });
     }
     // Returns balances, kycStatus, etc.
-    res.json(user); 
+    res.json(user);
   } catch (err) {
     console.error("User Fetch Error:", err);
     res.status(500).json({ error: 'Internal Tank Error' });

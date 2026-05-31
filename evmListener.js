@@ -6,14 +6,14 @@ const config = require('./config');
 const Deposit = require('./models/Deposit');
 const User = require('./models/User');
 
-// Hardened redundancy pools with premium institutional endpoints
+// Hardened redundancy pools with active fallback endpoints (Ankr Excluded)
 const SUPPORTED_CHAINS = {
   XDC: {
     name: 'XDC',
     endpoints: [
       process.env.XDC_RPC_URL,
+      'https://erpc.xdcrpc.com/',              // High-Throughput Cluster Alternate
       'https://arpc.xinfin.network/',          // Premium Tatum Gate Anchor
-      'https://erpc.xdcrpc.com/',              // High-Throughput Cluster
       'https://50.rpc.thirdweb.com/',          // High-Availability Mirror
       'https://rpc.xdc.org',                   // Canonical Foundation Node
       'https://rpc.xinfin.network'             // Standard Public Fallback Node
@@ -26,9 +26,8 @@ const SUPPORTED_CHAINS = {
     name: 'FLR',
     endpoints: [
       process.env.FLR_RPC_URL,
-      'https://flare-api.flare.network/ext/C/rpc',
-      'https://flare.public-rpc.com',
-      'https://rpc.ankr.com/flare'
+      'https://flare.public-rpc.com',          // High-Availability Mirror Route
+      'https://flare-api.flare.network/ext/C/rpc'
     ].filter(Boolean),
     chainId: 14,
     nativeToken: 'FLR',
@@ -71,7 +70,7 @@ async function startEvmListener(chainKey, chainConfig) {
       providers[chainKey] = provider;
       providerConnected = true;
 
-      // Process new block frames via highly-parallel parsing
+      // Process new block frames via sequential parsing
       provider.on('block', async (blockNumber) => {
         try {
           const targetBlock = chainKey === 'FLR' ? blockNumber - 3 : blockNumber;
@@ -82,35 +81,32 @@ async function startEvmListener(chainKey, chainConfig) {
 
           logger.debug({ module: 'EvmListener', chain: chainKey, event: 'block_received', block: targetBlock, txCount: block.transactions.length });
 
-          // HIGH-SPEED BATCHING WORKER POOL
-          // Process blocks with intense transaction volumes asynchronously inside chunks
-          const BATCH_SIZE = 15;
-          const transactions = block.transactions;
-          
-          for (let i = 0; i < transactions.length; i += BATCH_SIZE) {
-            const batch = transactions.slice(i, i + BATCH_SIZE);
-            
-            await Promise.all(batch.map(async (tx) => {
-              try {
-                // 1. Evaluate Native Token Movement
-                if (tx.to && tx.value > 0n) {
-                  await processNativeTransfer(tx, chainKey, chainConfig);
-                }
+          // METERED PACING PIPELINE (Prevents Node 429 Rate-Exhaustion BANS)
+          // Walks transactions sequentially rather than blasting a parallel network wall
+          for (const tx of block.transactions) {
+            try {
+              // 1. Evaluate Native Token Movement
+              if (tx.to && tx.value > 0n) {
+                await processNativeTransfer(tx, chainKey, chainConfig);
+              }
 
-                // 2. Extract and Evaluate Contract Receipts
-                const receipt = await provider.getTransactionReceipt(tx.hash);
-                if (receipt && receipt.status === 1 && receipt.logs) {
-                  for (const log of receipt.logs) {
-                    if (log.topics && log.topics[0] === TRANSFER_SIG) {
-                      await processTransferLog(log, chainKey, chainConfig, tx.hash);
-                    }
+              // 2. Extract and Evaluate Contract Receipts
+              const receipt = await provider.getTransactionReceipt(tx.hash);
+              if (receipt && receipt.status === 1 && receipt.logs) {
+                for (const log of receipt.logs) {
+                  if (log.topics && log.topics[0] === TRANSFER_SIG) {
+                    await processTransferLog(log, chainKey, chainConfig, tx.hash);
                   }
                 }
-              } catch (txErr) {
-                // Catches isolated transaction failures without crashing the block parser thread
-                logger.debug({ module: 'EvmListener', chain: chainKey, event: 'tx_parse_failed', txHash: tx.hash, error: txErr.message });
               }
-            }));
+
+              // Minor execution delay (15ms) to give the RPC load balancer breathing room
+              await new Promise(resolve => setTimeout(resolve, 15));
+
+            } catch (txErr) {
+              // Catches isolated transaction failures without crashing the block parser thread
+              logger.debug({ module: 'EvmListener', chain: chainKey, event: 'tx_parse_failed', txHash: tx.hash, error: txErr.message });
+            }
           }
 
         } catch (err) {
@@ -144,19 +140,21 @@ async function startEvmListener(chainKey, chainConfig) {
 
 // Native token processing (XDC/FLR)
 async function processNativeTransfer(tx, chainKey, chainConfig) {
-  const toAddr = tx.to.toLowerCase();
+  // Sanitize address layout cleanly to standard 0x lower strings (prevents v6 ENS operational crashes)
+  const toAddr = tx.to.toLowerCase().replace(/^xdc/, '0x');
   const user = await User.findOne({ [`evmDeposits.${chainKey}`]: toAddr }).lean();
   if (!user) return;
 
   const formatUnits = ethers.formatUnits || ethers.utils.formatUnits;
   const amount = formatUnits(tx.value, chainConfig.decimals);
+  const cleanFromAddress = tx.from.toLowerCase().replace(/^xdc/, '0x');
 
   await Deposit.updateOne(
     { txHash: tx.hash, chain: chainKey },
     {
       $setOnInsert: {
         userId: user._id,
-        walletAddress: tx.from.toLowerCase(),
+        walletAddress: cleanFromAddress,
         chain: chainKey,
         token: chainConfig.nativeToken,
         txHash: tx.hash,
@@ -180,7 +178,8 @@ async function processTransferLog(log, chainKey, chainConfig, parentTxHash) {
   const user = await User.findOne({ [`evmDeposits.${chainKey}`]: to }).lean();
   if (!user) return;
 
-  const tokenInfo = Object.values(config.TOKENS || {}).find(t => t.networks?.[chainKey]?.contract === log.address.toLowerCase());
+  const logAddressClean = log.address.toLowerCase().replace(/^xdc/, '0x');
+  const tokenInfo = Object.values(config.TOKENS || {}).find(t => t.networks?.[chainKey]?.contract === logAddressClean);
   if (!tokenInfo) return;
 
   const tokenSymbol = tokenInfo.symbol;
@@ -190,13 +189,14 @@ async function processTransferLog(log, chainKey, chainConfig, parentTxHash) {
   const amount = formatUnits(log.data, decimals);
 
   const txHash = log.transactionHash || parentTxHash;
+  const cleanFromAddress = '0x' + log.topics[1].slice(-40).toLowerCase();
 
   await Deposit.updateOne(
     { txHash: txHash, chain: chainKey },
     {
       $setOnInsert: {
         userId: user._id,
-        walletAddress: '0x' + log.topics[1].slice(-40).toLowerCase(),
+        walletAddress: cleanFromAddress,
         chain: chainKey,
         token: tokenSymbol,
         txHash: txHash,
