@@ -127,6 +127,7 @@ async function startXrplListener() {
       reconnectAttempts++;
       const delay = Math.min(BASE_DELAY * (1.6 ** (reconnectAttempts - 1)), MAX_DELAY);
       console.error(`Connection attempt ${reconnectAttempts} failed:`, err.message);
+
       if (reconnectAttempts < MAX_RECONNECT) {
         setTimeout(connectAndSubscribe, delay);
       } else {
@@ -156,7 +157,6 @@ async function startXrplListener() {
     if (last?.ledger_index > highestSeenLedger) highestSeenLedger = last.ledger_index;
 
     let minLedger = highestSeenLedger > 0 ? highestSeenLedger + 1 : undefined;
-
     if (!minLedger) {
       try {
         const { result } = await client.request({ command: 'server_info' });
@@ -181,11 +181,9 @@ async function startXrplListener() {
           marker,
         };
         const resp = await client.request(req);
-
         for (const item of resp.result.transactions || []) {
-          client.emit('transaction', { validated: true, transaction: item.tx, meta: item.meta });
+          client.emit('transaction', { validated: true, transaction: item.tx, meta: item.meta, isHistorical: true });
         }
-
         marker = resp.result.marker;
       } catch (err) {
         console.error('Gap scan failed:', err.message);
@@ -198,20 +196,20 @@ async function startXrplListener() {
   // Transaction handler
   // ────────────────────────────────────────────────
   client.on('transaction', async (ev) => {
-    if (!ev.validated) return;
-    const { transaction: tx, meta } = ev;
+    // FIX 1: Guard clause drops empty ledger noise so it doesn't crash the container
+    if (!ev || !ev.validated || !ev.transaction || !ev.meta) return;
+
+    const { transaction: tx, meta, isHistorical } = ev;
 
     if (tx.TransactionType !== 'Payment' || meta.TransactionResult !== 'tesSUCCESS' || tx.Destination !== depositAddress) return;
-
     if (tx.ledger_index > highestSeenLedger) highestSeenLedger = tx.ledger_index;
 
     let amount = null;
     let token = null;
-
     const da = meta.delivered_amount;
 
     if (da === 'unavailable') {
-      console.warn(`Skipping tx ${tx.hash.slice(0,12)}... - delivered_amount unavailable`);
+      console.warn(`Skipping tx ${tx.hash.slice(0, 12)}... - delivered_amount unavailable`);
       return;
     }
 
@@ -223,7 +221,6 @@ async function startXrplListener() {
         const xrpl = spec.networks?.XRP;
         return xrpl?.issuer === da.issuer && spec.currency === da.currency;
       });
-
       if (match) {
         token = match[0];
         amount = da.value;
@@ -231,7 +228,6 @@ async function startXrplListener() {
     }
 
     if (!token || !amount || new Decimal(amount).isZero()) return;
-
     if (await Deposit.exists({ txHash: tx.hash, chain: 'XRPL' })) return;
 
     const tag = String(tx.DestinationTag ?? '');
@@ -239,8 +235,8 @@ async function startXrplListener() {
 
     console.log(
       `[XRPL-DEPOSIT] ${amount} ${token} | tag:${tag} | ` +
-      `tx:${tx.hash.slice(0,12)}... | ledger:${tx.ledger_index} | ` +
-      `from:${tx.Account.slice(0,8)}...`
+      `tx:${tx.hash.slice(0, 12)}... | ledger:${tx.ledger_index} | ` +
+      `from:${tx.Account.slice(0, 8)}...`
     );
 
     let user = userCache.get(tag);
@@ -251,7 +247,6 @@ async function startXrplListener() {
     }
 
     const decAmount = new Decimal(amount);
-
     depositBuffer.push({
       userId: user._id,
       walletAddress: tx.Account,
@@ -270,7 +265,8 @@ async function startXrplListener() {
     const tokens = userBalances.get(userIdStr);
     tokens[token] = new Decimal(tokens[token] || '0').plus(decAmount).toString();
 
-    if (depositBuffer.length > FLUSH_THRESHOLD || depositBuffer.length > MAX_BUFFER_SIZE - 100) {
+    // Still flush immediately if we hit the high-volume threshold
+    if (!isHistorical && (depositBuffer.length > FLUSH_THRESHOLD || depositBuffer.length > MAX_BUFFER_SIZE - 100)) {
       await flushDeposits();
     }
   });
@@ -279,17 +275,18 @@ async function startXrplListener() {
   // Start everything
   // ────────────────────────────────────────────────
   await connectAndSubscribe();
-
-  // Initial network status fetch
   await updateNetworkStatus();
-
-  // Periodic network status
   setInterval(updateNetworkStatus, 10000);
 
-  // Initial gap scan
-  scanGaps().catch(err => console.error('Initial gap scan failed:', err.message));
+  // FIX 2: Time-based flush ensures small amounts of deposits don't get stuck forever
+  setInterval(async () => {
+    if (depositBuffer.length > 0) {
+      await flushDeposits();
+    }
+  }, 3000);
 
-  // Periodic gap scan
+  scanGaps().catch(err => console.error('Initial gap scan failed:', err.message));
+  
   setInterval(() => {
     if (client.isConnected()) {
       scanGaps().catch(err => console.error('Periodic gap scan failed:', err.message));

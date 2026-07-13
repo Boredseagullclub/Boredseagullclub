@@ -1,63 +1,67 @@
 import React, { useEffect, useState } from 'react';
 import axios from 'axios';
 import BridgeWidget from '../components/BridgeWidget';
-import KycModal from '../components/KycModal';
+import KycModal from '../components/KycModal'; 
 
 const Dashboard = ({ userAddress, isStandalone }) => {
   const [balances, setBalances] = useState([]);
   const [kycStatus, setKycStatus] = useState('TIER_0_UNVERIFIED');
   const [loading, setLoading] = useState(true);
-  const [showKycModal, setShowKycModal] = useState(false);
+  const [showKycModal, setShowKycModal] = useState(false); 
 
-  // 🦅 Grab the raw profile session indicator straight from local storage
   const rawAddress = userAddress || localStorage.getItem('sovereign_local') || localStorage.getItem('seagull_user_id') || 'GUEST_MODE';
+  const address = rawAddress; 
 
-  // 🦅 CLEAN LINKAGE: Fallback rows are now safe because we let rawAddress flow dynamically.
-  // We read the address directly. No tracking loops overriding different user logins.
-  const address = rawAddress;
+  const displayAddress = (rawAddress.length > 25 && rawAddress !== "GUEST_MODE")
+    ? `${rawAddress.slice(0, 6)}...${rawAddress.slice(-4)}`
+    : rawAddress; 
 
-  // Format header representation safely based on the resolved address variable
-  const displayAddress = (address.length > 25 && address !== "GUEST_MODE")
-    ? `${address.slice(0, 6)}...${address.slice(-4)}`
-    : address;
-
-  const mnemonic = localStorage.getItem('secret') || localStorage.getItem('seagull_mnemonic');
+  const mnemonic = localStorage.getItem('secret') || localStorage.getItem('seagull_mnemonic'); 
 
   useEffect(() => {
     const fetchBalancesAndCompliance = async () => {
-      if (!rawAddress || rawAddress === "GUEST_MODE") {
+      if (!address || address === "GUEST_MODE") {
         setLoading(false);
         return;
+      } 
+
+      // 1. Immediately load any saved tier from local storage
+      const savedKyc = localStorage.getItem(`kyc_status_${address}`);
+      if (savedKyc) {
+        setKycStatus(savedKyc);
       }
 
       try {
+        // 🦅 Extract pre-derived native keys from local memory so backend doesn't guess
         const cachedXrpl = localStorage.getItem('cached_xrpl_address') || '';
-        const cachedStellar = localStorage.getItem('cached_stellar_address') || '';
-        const cachedHedera = localStorage.getItem('cached_hedera_id') || ''; // 🦅 Pulled Hedera into the pipeline
+        const cachedStellar = localStorage.getItem('cached_stellar_address') || ''; 
 
-        // 🦅 Always query using rawAddress so the backend backstop catch block can process 'sovereign_user'
-        const resBalances = await axios.get(`/api/balances/${rawAddress}`, {
+        // 🦅 Inject custom headers into the pulse payload request
+        const resBalances = await axios.get(`/api/balances/${address}`, {
           headers: {
             'x-native-xrpl': cachedXrpl,
-            'x-native-stellar': cachedStellar,
-            'x-native-hedera': cachedHedera // 🦅 Passing Hedera straight to the backend
+            'x-native-stellar': cachedStellar
           }
         });
-        setBalances(resBalances.data);
+        setBalances(resBalances.data); 
 
-        const resProfile = await axios.get(`/api/agent/profile?id=${rawAddress}`);
+        const resProfile = await axios.get(`/api/agent/profile?id=${address}`);
         if (resProfile.data && resProfile.data.success) {
-          setKycStatus(resProfile.data.kycStatus);
+          // 2. Only update state from server if the server actually recognizes a verified tier
+          if (resProfile.data.kycStatus !== 'TIER_0_UNVERIFIED') {
+            setKycStatus(resProfile.data.kycStatus);
+            localStorage.setItem(`kyc_status_${address}`, resProfile.data.kycStatus);
+          }
         }
       } catch (err) {
         console.error("Pulse Failed:", err);
       } finally {
         setLoading(false);
       }
-    };
+    }; 
 
     fetchBalancesAndCompliance();
-  }, [rawAddress]);
+  }, [address]); 
 
   return (
     <div className="min-h-screen bg-black text-white p-6 md:p-12">
@@ -99,10 +103,10 @@ const Dashboard = ({ userAddress, isStandalone }) => {
             )}
           </p>
         </div>
-      </header>
+      </header> 
 
       <main className="max-w-7xl mx-auto flex flex-col items-center w-full">
-        {loading && address === "sovereign_user" ? (
+        {loading && address !== "GUEST_MODE" ? (
           <div className="text-zinc-600 font-bold animate-pulse uppercase font-mono py-12">
             Scanning Assets...
           </div>
@@ -114,16 +118,15 @@ const Dashboard = ({ userAddress, isStandalone }) => {
               balances={balances}
               userWallets={{
                 evm: address,
-                xrpl: localStorage.getItem('cached_xrpl_address') || balances.find(b => b.chain === 'XRPL')?.address || '',
-                xlm: localStorage.getItem('cached_stellar_address') || balances.find(b => b.chain === 'XLM')?.address || '',
-                stellar: localStorage.getItem('cached_stellar_address') || balances.find(b => b.chain === 'XLM')?.address || '',
-                hedera: localStorage.getItem('cached_hedera_id') || balances.find(b => b.chain === 'HBAR')?.address || '' // 🦅 Explicit Hedera binding for the widget
+                xrpl: localStorage.getItem('cached_xrpl_address'),
+                xlm: localStorage.getItem('cached_stellar_address'),
+                stellar: localStorage.getItem('cached_stellar_address')
               }}
               kycStatus={kycStatus}
             />
           </div>
         )}
-      </main>
+      </main> 
 
       {showKycModal && (
         <KycModal
@@ -131,6 +134,8 @@ const Dashboard = ({ userAddress, isStandalone }) => {
           targetTier="TIER_2_INSTITUTIONAL"
           onVerificationSuccess={(registration) => {
             setKycStatus("TIER_2_INSTITUTIONAL");
+            // 3. Save to local storage right when they finish
+            localStorage.setItem(`kyc_status_${address}`, "TIER_2_INSTITUTIONAL");
             setShowKycModal(false);
           }}
           onClose={() => setShowKycModal(false)}
@@ -138,6 +143,6 @@ const Dashboard = ({ userAddress, isStandalone }) => {
       )}
     </div>
   );
-};
+}; 
 
 export default Dashboard;

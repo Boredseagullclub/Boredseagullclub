@@ -29,18 +29,21 @@ function App() {
 
   const { user, loading } = useBridge(id);
 
-  const handleCreateWallet = async () => {
+    const handleCreateWallet = async () => {
     try {
-      const response = await fetch('/api/auth/generate-mnemonic');
-      const data = await response.json();
-      if (data.mnemonic) {
-        setGeneratedMnemonic(data.mnemonic);
+      // 🦅 Generate a secure 24-word mnemonic entirely on the client side (256 bits of entropy)
+      const mnemonic = bip39.generateMnemonic(256);
+      
+      if (mnemonic) {
+        setGeneratedMnemonic(mnemonic);
         setShowReveal(true);
       }
     } catch (err) {
+      console.error("Client-side generation error:", err);
       alert("🦅 Generation failed.");
     }
   };
+
 
     const handleImport = async () => {
     if (!secretInput) return alert("🦅 Enter a seed!");
@@ -234,7 +237,7 @@ function App() {
               <div style={menuLinkContainerStyle}>
                 <Link to="/" onClick={() => setIsMenuOpen(false)} style={menuLinkItemStyle}>🏛️ SOVEREIGN WALLET</Link>
                 <Link to="/swap" onClick={() => setIsMenuOpen(false)} style={menuLinkItemStyle}>🔄 LIVE EXCHANGE</Link>
-                <Link to="/explorer" onClick={() => setIsMenuOpen(false)} style={menuLinkItemStyle}>🛰️ SEAGULL EXPLORER</Link>
+                <Link to="/rich-list" onClick={() => setIsMenuOpen(false)} style={menuLinkItemStyle}>🛰️ RICH LIST/ SEAGULL EXPLORER</Link>
                 <Link to="/agent-gateway" onClick={() => setIsMenuOpen(false)} style={menuLinkItemStyle}>🤖 AI AGENT GATEWAY</Link>
               </div>
             </div>

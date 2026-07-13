@@ -1,6 +1,6 @@
 const { ethers } = require('ethers');
 const xrpl = require('xrpl');
-const mongoose = require('mongoose');                              
+const mongoose = require('mongoose');
 
 // The REAL Ecosystem Registry
 const REGS = {
@@ -9,15 +9,15 @@ const REGS = {
     XRPL_SGC:     'rnqiA8vuNriU9pqD1ZDGFH8ajQBL25Wkno',         // SeagullCoin on XRPL
     XRPL_SGCSH:   'rNHeGnj4kqGSVyFzDcoyi3gsp1bdPuGeNK',         // SeagullCash on XRPL
     HEDERA_SGCSH: '0.0.3115556',                                // SeagullCash on Hedera (HTS ID)
-    STELLAR_SGCSH:'GBC2VA3YMAIVB3A77VNRPKMQI3RAPDUDDP7JI2PE426MGKDDJFPRVWP7'     
+    STELLAR_SGCSH:'GBC2VA3YMAIVB3A77VNRPKMQI3RAPDUDDP7JI2PE426MGKDDJFPRVWP7'
 };
 
-function getDbSafely() {                                               
+function getDbSafely() {
     if (mongoose.connection.readyState !== 1) {
         throw new Error("Mongoose is not fully connected to MongoDB yet.");
     }
     const targetDb = mongoose.connection.useDb('SeagullNet');
-    if (!targetDb) {                                                       
+    if (!targetDb) {
         throw new Error("Failed to switch to the SeagullNet database instance.");
     }
     return targetDb;
@@ -25,29 +25,29 @@ function getDbSafely() {
 
 /** * 🏛️ TASK A: INDEX NATIVE EVM HOLDERS (XDC & Flare)
  */
-async function syncEvmHolders(chainKey, rpcUrl, contractAddress) {     
+async function syncEvmHolders(chainKey, rpcUrl, contractAddress) {
     try {
         const db = getDbSafely();
         const provider = new ethers.JsonRpcProvider(rpcUrl);
         const contract = new ethers.Contract(contractAddress, [
-            "event Transfer(address indexed from, address indexed to, uint256 value)",                                                           
+            "event Transfer(address indexed from, address indexed to, uint256 value)",            
             "function balanceOf(address owner) view returns (uint256)"
         ], provider);
 
         const filter = contract.filters.Transfer();
                 const latestBlock = await provider.getBlockNumber();
         const uniqueAddresses = new Set();
-        
+
         const targetLookback = chainKey.toUpperCase() === 'FLARE' ? 2000000 : 100000;
-        const chunkSize = 1000; 
-        
+        const chunkSize = 1000;
+
         let currentMax = latestBlock;
         let totalScanned = 0;
 
         while (totalScanned < targetLookback) {
             let fromBlock = currentMax - chunkSize;
             if (fromBlock < 0) fromBlock = 0;
-            
+
             try {
                 const chunkLogs = await contract.queryFilter(filter, fromBlock, currentMax);
                 chunkLogs.forEach(log => {
@@ -77,25 +77,25 @@ async function syncEvmHolders(chainKey, rpcUrl, contractAddress) {
 
                 bulkOps.push({
                     updateOne: {
-                        filter: { walletAddress: wallet.toLowerCase() },                                                                                      
+                        filter: { walletAddress: wallet.toLowerCase() },                          
                         update: { $set: { balance: cleanBal, lastUpdated: new Date() } },
                         upsert: true
                     }
                 });
-            } catch (e) {                                                          
+            } catch (e) {
                 console.error(`[INDEXER ERROR] Failed fetching balance for wallet ${wallet}:`, e.message);
             }
         }
 
-        if (bulkOps.length > 0) {                                              
+        if (bulkOps.length > 0) {
             const colName = `${chainKey.toLowerCase()}_holders`;
             const result = await db.collection(colName).bulkWrite(bulkOps);
             console.log(`[INDEXER SUCCESS] Synced ${result.upsertedCount + result.modifiedCount} records to ${colName}`);
-        } else {                                                               
+        } else {
             console.log(`[INDEXER info] No recent EVM transfers found for ${chainKey}`);
         }
     } catch (err) {
-        console.error(`[INDEXER CRITICAL] EVM Sync failed for ${chainKey}:`, err.message);                                                
+        console.error(`[INDEXER CRITICAL] EVM Sync failed for ${chainKey}:`, err.message);        
     }
 }
 
@@ -106,7 +106,7 @@ async function syncEvmHolders(chainKey, rpcUrl, contractAddress) {
 async function syncXrplHolders(ticker, issuerAddress) {
     let client;
     try {
-        const db = getDbSafely();                                          
+        const db = getDbSafely();
         client = new xrpl.Client("wss://xrpl.ws");
         await client.connect();
 
@@ -117,7 +117,7 @@ async function syncXrplHolders(ticker, issuerAddress) {
         do {
             const response = await client.request({
                 command: "account_lines",
-                account: issuerAddress,                                            
+                account: issuerAddress,
                 limit: 400,
                 marker: marker
             });
@@ -125,7 +125,7 @@ async function syncXrplHolders(ticker, issuerAddress) {
             if (response.result && response.result.lines) {
                 allLines.push(...response.result.lines);
             }
-            marker = response.result.marker; 
+            marker = response.result.marker;
         } while (marker);
 
         console.log(`[INDEXER INFO] Retrieved total of ${allLines.length} live trustline structures for ${ticker}`);
@@ -144,12 +144,12 @@ async function syncXrplHolders(ticker, issuerAddress) {
         if (bulkOps.length > 0) {
             const colName = `xrpl_${ticker.toLowerCase()}_holders`;
             const result = await db.collection(colName).bulkWrite(bulkOps);
-            console.log(`[INDEXER SUCCESS] Fully Synced ${result.upsertedCount + result.modifiedCount} complete trustlines into ${colName}`);                
+            console.log(`[INDEXER SUCCESS] Fully Synced ${result.upsertedCount + result.modifiedCount} complete trustlines into ${colName}`);
         }
     } catch (err) {
         console.error(`[INDEXER CRITICAL] XRPL sync failed for ${ticker}:`, err.message);
     } finally {
-        if (client) await client.disconnect();                         
+        if (client) await client.disconnect();
     }
 }
 
@@ -175,7 +175,7 @@ async function syncStellarCash(issuerAddress) {
                 const targetBal = acc.balances.find(b => String(b.asset_code).toUpperCase() === 'SGCSH' && b.asset_issuer === issuerAddress);
                 bulkOps.push({
                     updateOne: {
-                        filter: { walletAddress: acc.account_id },                                                                                             
+                        filter: { walletAddress: acc.account_id },                                
                         update: { $set: { balance: targetBal ? parseFloat(targetBal.balance) : 0, lastUpdated: new Date() } },
                         upsert: true
                     }
@@ -187,11 +187,11 @@ async function syncStellarCash(issuerAddress) {
         }
 
         if (bulkOps.length > 0) {
-            const result = await db.collection('stellar_sgcsh_holders').bulkWrite(bulkOps);                                           
+            const result = await db.collection('stellar_sgcsh_holders').bulkWrite(bulkOps);       
             console.log(`[INDEXER SUCCESS] Synced ${bulkOps.length} global records to stellar_sgcsh_holders`);
         }
     } catch (err) {
-        console.error(`[INDEXER CRITICAL] Stellar snapshot failed:`, err.message);                                                    
+        console.error(`[INDEXER CRITICAL] Stellar snapshot failed:`, err.message);                
     }
 }
 
@@ -207,7 +207,7 @@ async function syncHederaCash(tokenId) {
         let bulkOps = [];
 
         while (url) {
-            const res = await fetch(url);                                      
+            const res = await fetch(url);
             if (res.status !== 200) throw new Error(`Hedera Mirror API returned status ${res.status}`);
             const data = await res.json();
             const holderList = data.balances || [];
@@ -219,7 +219,7 @@ async function syncHederaCash(tokenId) {
                     updateOne: {
                         filter: { walletAddress: item.account },
                         update: { $set: { balance: parseFloat(item.balance) / 1000000, lastUpdated: new Date() } },
-                        upsert: true                                                   
+                        upsert: true
                     }
                 });
             });
@@ -228,30 +228,30 @@ async function syncHederaCash(tokenId) {
         }
 
         if (bulkOps.length > 0) {
-            const result = await db.collection('hedera_sgcsh_holders').bulkWrite(bulkOps);                                                        
+            const result = await db.collection('hedera_sgcsh_holders').bulkWrite(bulkOps);        
             console.log(`[INDEXER SUCCESS] Synced ${bulkOps.length} comprehensive records to hedera_sgcsh_holders`);
         }
     } catch (err) {
-        console.error(`[INDEXER CRITICAL] Hedera snapshot failed:`, err.message);                                                         
+        console.error(`[INDEXER CRITICAL] Hedera snapshot failed:`, err.message);                 
     }
 }
 
 async function triggerGlobalEcosystemSync() {
-    console.log(`[${new Date().toISOString()}] 🚀 Initiating Strict Multi-Chain Holder Sync...`);                                     
+    console.log(`[${new Date().toISOString()}] 🚀 Initiating Strict Multi-Chain Holder Sync...`); 
     try {
         getDbSafely();
 
         // 1. SeagullCoin Track (SGC)
-        await syncEvmHolders('XDC', 'https://rpc.xdc.network/', REGS.XDC_SGC);
+        await syncEvmHolders('XDC', 'https://erpc.xinfin.network', REGS.XDC_SGC);
         await syncEvmHolders('FLARE', 'https://rpc.ankr.com/flare', REGS.FLR_SGC);
         await syncXrplHolders('SGC', REGS.XRPL_SGC);
 
-        // 2. SeagullCash Track (SGCSH)                                    
+        // 2. SeagullCash Track (SGCSH)
         await syncXrplHolders('SGCSH', REGS.XRPL_SGCSH);
         await syncStellarCash(REGS.STELLAR_SGCSH);
         await syncHederaCash(REGS.HEDERA_SGCSH);
 
-        console.log(`[${new Date().toISOString()}] 🏁 All sync operational loops executed.`);                                             
+        console.log(`[${new Date().toISOString()}] 🏁 All sync operational loops executed.`);     
     } catch (dbErr) {
         console.error("[INDEXER ABORTED] Database driver state unready:", dbErr.message);
     }

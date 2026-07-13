@@ -1,19 +1,19 @@
-import React, { useState, useEffect } from 'react'; 
+import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 
-const SeagullExplorer = ({ standalone = false }) => { 
+const SeagullExplorer = ({ standalone = false }) => {
   const [search, setSearch] = useState('');
-  const [results, setResults] = useState(standalone ? [] : null); 
+  const [results, setResults] = useState(standalone ? [] : null);
   const [loading, setLoading] = useState(false);
 
-  // 🎯 CACHE SNAPSHOT ENGINE DATA PIPELINES                                                                
+  // 🎯 CACHE SNAPSHOT ENGINE DATA PIPELINES
   const [globalMetrics, setGlobalMetrics] = useState({ sgcTopBalances: [], sgcshTopBalances: [] });
-  const [activeTab, setActiveTab] = useState(standalone ? 'richlist' : 'search'); 
-  
+  const [activeTab, setActiveTab] = useState(standalone ? 'richlist' : 'search');
+
   // 🎯 SUB-FILTERS: Multi-chain distribution triggers
-  const [sgcChainFilter, setSgcChainFilter] = useState('ALL');   
-  const [sgcshChainFilter, setSgcshChainFilter] = useState('ALL'); 
-  
+  const [sgcChainFilter, setSgcChainFilter] = useState('ALL');
+  const [sgcshChainFilter, setSgcshChainFilter] = useState('ALL');
+
   // 🎯 NEW: Interactive page depth indices for mobile screen boundaries
   const [sgcPage, setSgcPage] = useState(1);
   const [sgcshPage, setSgcshPage] = useState(1);
@@ -37,6 +37,22 @@ const SeagullExplorer = ({ standalone = false }) => {
     'SeagullCash': 'https://files.catbox.moe/w3cets.png'
   };
 
+  // 🦅 NEW: Explorer Router for External Ledger Verification
+  const getMainnetExplorerUrl = (chain, hash) => {
+    if (!hash || !chain) return '#';
+    const EXPLORERS = {
+      'HBAR': `https://hashscan.io/mainnet/transaction/${hash}`,
+      'XRPL': `https://xrpscan.com/tx/${hash}`,
+      'XRP': `https://xrpscan.com/tx/${hash}`,
+      'XLM': `https://stellar.expert/explorer/public/tx/${hash}`,
+      'STELLAR': `https://stellar.expert/explorer/public/tx/${hash}`,
+      'XDC': `https://xdcscan.com/tx/${hash}`,
+      'FLARE': `https://flare-explorer.flare.network/tx/${hash}`,
+      'FLR': `https://flare-explorer.flare.network/tx/${hash}`
+    };
+    return EXPLORERS[chain.toUpperCase()] || `https://xrpscan.com/tx/${hash}`;
+  };
+
   useEffect(() => {
     const fetchGlobalMetricsOnLoad = async () => {
       setLoading(true);
@@ -55,20 +71,25 @@ const SeagullExplorer = ({ standalone = false }) => {
     fetchGlobalMetricsOnLoad();
   }, []);
 
-  const handleSearch = async () => {
-    if (!search) return;
+  // 🦅 UPGRADED: Allows clicking an address to instantly override the input box
+  const handleSearch = async (overrideAddress = null) => {
+    const targetAddress = typeof overrideAddress === 'string' ? overrideAddress : search;
+    if (!targetAddress) return;
+
+    setSearch(targetAddress);
     setLoading(true);
     setResults(null);
     setExpandedIndexVal(null);
     setActiveIsoTxHash(null);
     try {
-      const res = await axios.get(`/api/explorer/scout/${search.trim()}`);
+      const res = await axios.get(`/api/explorer/scout/${targetAddress.trim()}`);
       if (res.data && res.data.success) {
         setResults(res.data.data);
         if (res.data.richlist) {
           setGlobalMetrics(res.data.richlist);
         }
         setActiveTab('search');
+        window.scrollTo({ top: 0, behavior: 'smooth' }); // Snap back to top for new data
       } else {
         setResults([]);
       }
@@ -112,14 +133,14 @@ const SeagullExplorer = ({ standalone = false }) => {
             onChange={(e) => setSearch(e.target.value)}
             onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
           />
-          <button onClick={handleSearch} style={scoutButtonStyle}>
+          <button onClick={() => handleSearch()} style={scoutButtonStyle}>
             {loading ? 'SCAN...' : 'Search'}
           </button>
         </div>
-                                                                                                            
+
         {results && !loading && (
           <div style={tabContainerStyle}>
-            {!standalone && ( 
+            {!standalone && (
               <button
                 onClick={() => setActiveTab('search')}
                 style={{...tabButtonStyle, color: activeTab === 'search' ? '#00ffcc' : '#6c7d93', borderBottomColor: activeTab === 'search' ? '#00ffcc' : 'transparent'}}
@@ -195,7 +216,7 @@ const SeagullExplorer = ({ standalone = false }) => {
                         </div>
                       </div>
 
-                      {/* Right Balance Block (Fixed Overlapping text alignment) */}
+                      {/* Right Balance Block */}
                       <div style={resultCardRightBlock}>
                         <div style={{ textAlign: 'right', minWidth: '0' }}>
                           <div style={balanceValueStyle}>{formattedBalance}</div>
@@ -206,7 +227,7 @@ const SeagullExplorer = ({ standalone = false }) => {
                         </div>
                       </div>
                     </div>
-                                                                                                            
+
                     {isExpanded && (
                       <div style={drawerPanelStyle}>
                         <div style={drawerMetaLine}>
@@ -225,6 +246,7 @@ const SeagullExplorer = ({ standalone = false }) => {
                                     }}
                                     style={{...txRowStyle, borderColor: isTxDetailOpen ? '#00ffcc' : 'rgba(255,255,255,0.02)'}}
                                   >
+                                    {/* 🦅 UPGRADED: Clickable Hash, Bridge UI, and Clickable Pivot Counterparty */}
                                     <div style={{ display: 'flex', alignItems: 'center', gap: '8px', minWidth: '0', flex: 1 }}>
                                       <span style={{
                                         color: tx.type === 'SEND' ? '#ff3366' : '#00ffcc',
@@ -236,14 +258,42 @@ const SeagullExplorer = ({ standalone = false }) => {
                                         {tx.type === 'SEND' ? '[-] OUT' : '[+] IN'}
                                       </span>
                                       <div style={{ minWidth: '0', flex: 1 }}>
-                                        <div style={txHashTextStyle}>
-                                          {tx.messageType || 'pacs.008'} // {tx.hash ? `${tx.hash.slice(0, 6)}...${tx.hash.slice(-6)}` : 'UNKNOWN'}
+                                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                          <div style={txHashTextStyle}>
+                                            {tx.messageType || 'pacs.008'} // 
+                                            <a 
+                                              href={getMainnetExplorerUrl(asset.chain, tx.hash)} 
+                                              target="_blank" 
+                                              rel="noopener noreferrer"
+                                              onClick={(e) => e.stopPropagation()} 
+                                              style={{ color: '#00d4ff', textDecoration: 'none', marginLeft: '4px' }}
+                                            >
+                                              {tx.hash ? `${tx.hash.slice(0, 6)}...${tx.hash.slice(-6)} ↗` : 'UNKNOWN'}
+                                            </a>
+                                          </div>
+                                          
+                                          {/* CROSS-CHAIN BRIDGE NOTIFIER */}
+                                          {tx.bridgeMatch && (
+                                            <span style={{ background: '#ff007f', color: '#fff', fontSize: '7px', padding: '1px 4px', borderRadius: '4px', fontWeight: 'bold' }}>
+                                              BRIDGED ➔ {tx.bridgeMatch.toChain}
+                                            </span>
+                                          )}
                                         </div>
-                                        <div style={txCounterpartyStyle}>
+
+                                        <div 
+                                          style={{...txCounterpartyStyle, cursor: 'pointer', color: '#aaa'}}
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            handleSearch(tx.counterparty);
+                                          }}
+                                          onMouseEnter={(e) => e.target.style.color = '#00ffcc'}
+                                          onMouseLeave={(e) => e.target.style.color = '#aaa'}
+                                        >
                                           {tx.type === 'SEND' ? `Dest: ${tx.counterparty}` : `Src: ${tx.counterparty}`}
                                         </div>
                                       </div>
                                     </div>
+                                    
                                     <div style={{ textAlign: 'right', flexShrink: 0, paddingLeft: '6px' }}>
                                       <div style={{
                                         fontFamily: 'monospace',
@@ -256,6 +306,8 @@ const SeagullExplorer = ({ standalone = false }) => {
                                       <div style={txTimeStyle}>{tx.timestamp ? tx.timestamp.split(',')[0] : 'N/A'}</div>
                                     </div>
                                   </div>
+                                  
+                                  {/* ISO XML Viewer */}
                                   {isTxDetailOpen && (
                                     <div style={isoTerminalWrapperStyle}>
                                       <div style={terminalHeaderBar}>
@@ -319,7 +371,15 @@ const SeagullExplorer = ({ standalone = false }) => {
                             <div key={idx} style={leaderRowStyle}>
                               <div style={{display: 'flex', alignItems: 'center', gap: '8px', minWidth: '0', flex: 1}}>
                                 <span style={rankBadgeStyle}>{startIndex + idx + 1}</span>
-                                <span style={whaleAddressStyle}>{whale.wallet}</span>
+                                {/* 🦅 UPGRADED: Clickable Whale Address */}
+                                <span 
+                                  style={{...whaleAddressStyle, cursor: 'pointer'}}
+                                  onClick={() => handleSearch(whale.wallet)}
+                                  onMouseEnter={(e) => e.target.style.color = '#00d4ff'}
+                                  onMouseLeave={(e) => e.target.style.color = '#aaa'}
+                                >
+                                  {whale.wallet}
+                                </span>
                               </div>
                               <div style={{textAlign: 'right', flexShrink: 0, paddingLeft: '4px'}}>
                                 <div style={leaderBalanceValueStyle}>{parseFloat(whale.balance).toLocaleString(undefined, { maximumFractionDigits: 2 })}</div>
@@ -373,7 +433,15 @@ const SeagullExplorer = ({ standalone = false }) => {
                             <div key={idx} style={leaderRowStyle}>
                               <div style={{display: 'flex', alignItems: 'center', gap: '8px', minWidth: '0', flex: 1}}>
                                 <span style={{...rankBadgeStyle, color: '#ff007f', borderColor: 'rgba(255,0,127,0.2)'}}>{startIndex + idx + 1}</span>
-                                <span style={whaleAddressStyle}>{whale.wallet}</span>
+                                {/* 🦅 UPGRADED: Clickable Whale Address */}
+                                <span 
+                                  style={{...whaleAddressStyle, cursor: 'pointer'}}
+                                  onClick={() => handleSearch(whale.wallet)}
+                                  onMouseEnter={(e) => e.target.style.color = '#00d4ff'}
+                                  onMouseLeave={(e) => e.target.style.color = '#aaa'}
+                                >
+                                  {whale.wallet}
+                                </span>
                               </div>
                               <div style={{textAlign: 'right', flexShrink: 0, paddingLeft: '4px'}}>
                                 <div style={leaderBalanceValueStyle}>{parseFloat(whale.balance).toLocaleString(undefined, { maximumFractionDigits: 2 })}</div>
@@ -385,7 +453,7 @@ const SeagullExplorer = ({ standalone = false }) => {
                           <div style={emptyStateCardStyle}>No SGCSH snapshots cached for this filter layer.</div>
                         )}
                       </div>
-                                                                                                            
+
                       {filtered.length > RECORDS_PER_PAGE && (
                         <div style={paginationFooterStyle}>
                           <button disabled={sgcshPage === 1} onClick={() => setSgcshPage(p => p - 1)} style={pageNavButtonStyle(sgcshPage === 1)}>◀ PREV</button>
@@ -399,7 +467,7 @@ const SeagullExplorer = ({ standalone = false }) => {
               </div>
             </div>
           )}
-                                                                                                            
+
           {!loading && results && results.length === 0 && activeTab === 'search' && (
             <div style={emptyStateCardStyle}>
               <p style={{ margin: 0, color: '#555', fontSize: '11px', letterSpacing: '1px' }}>
@@ -465,7 +533,7 @@ const rawPayloadCodeBlock = { margin: 0, padding: 0, color: '#00ffcc', fontSize:
 
 const chainBadgeStyle = (chain) => {
   const colors = { XRPL: '#00d4ff', STELLAR: '#fff', HEDERA: '#00ffcc', FLARE: '#ff3366', XDC: '#9933ff' };
-  return { fontWeight: 'bold', color: colors[chain] || '#fff', fontSize: '8px', fontFamily: 'monospace' };  
+  return { fontWeight: 'bold', color: colors[chain] || '#fff', fontSize: '8px', fontFamily: 'monospace' };
 };
 
 const tabContainerStyle = { display: 'flex', gap: '8px', width: '100%', marginBottom: '16px', borderBottom: '1px solid rgba(255,255,255,0.05)', boxSizing: 'border-box' };

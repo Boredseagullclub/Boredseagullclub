@@ -37,16 +37,21 @@ const BridgeWidget = ({ userAddress, userWallets, balances, userMnemonic, kycSta
   const [isoMessages, setIsoMessages] = useState([]);
   const [showActivateModal, setShowActivateModal] = useState(false);
   const [showSupport, setShowSupport] = useState(false);
+  const [supportMessage, setSupportMessage] = useState('');
   const [showModal, setShowModal] = useState(false);
   const [showSendModal, setShowSendModal] = useState(false);
   const [selectedAsset, setSelectedAsset] = useState(null);
   const [userEmail, setUserEmail] = useState('');
   const [sendForm, setSendForm] = useState({ amount: '', recipient: '', memo: '' });
- const [uiMemoText, setUiMemoText] = useState('');
+  const [uiMemoText, setUiMemoText] = useState('');
   const [serverMemo, setServerMemo] = useState('');
   const [showSuccess, setShowSuccess] = useState(false);
   const [justActivated, setJustActivated] = useState([]);
   const [showCopyToast, setShowCopyToast] = useState(false);
+  const [isNativeMode, setIsNativeMode] = useState(false);
+  const [isSending, setIsSending] = useState(false);
+  const [hederaView, setHederaView] = useState('EVM'); // 'EVM' or 'NATIVE'
+  const [resolvedHbarId, setResolvedHbarId] = useState('Loading...');
   const [successMsg, setSuccessMsg] = useState('');
   const [messages, setMessages] = useState([
     { role: 'system', text: "Connectivity issue or bridge stall? Describe it here and an admin will assist.", timestamp: new Date() }
@@ -62,7 +67,8 @@ const BridgeWidget = ({ userAddress, userWallets, balances, userMnemonic, kycSta
   const [replyingTo, setReplyingTo] = useState(null);
   const [adminMsg, setAdminMsg] = useState('');
   const [isProcessingTrust, setIsProcessingTrust] = useState(null);
-
+  const [errorToast, setErrorToast] = useState({ show: false, msg: "" });
+  
   const source = SOVEREIGN_OPTIONS.find(o => o.id === txDetails.fromOptionId);
   const target = SOVEREIGN_OPTIONS.find(o => o.id === txDetails.toOptionId);
 
@@ -81,24 +87,15 @@ const BridgeWidget = ({ userAddress, userWallets, balances, userMnemonic, kycSta
 
   useEffect(() => {
     if (!userAddress || userAddress === "GUEST_MODE") return;
-    const fetchTickets = async () => {
+        const fetchTickets = async () => {
       try {
-        const [bridgeRes, supportRes] = await Promise.all([
-          axios.get(`/api/bridge/tickets/${userAddress}`),
-          axios.get(`https://seagull-xlm.xyz/api/bridge/support/history/${userAddress}`)
-        ]);
-        let combined = [];
-        if (bridgeRes.data?.success) combined = [...bridgeRes.data.tickets];
-        if (supportRes.data?.success) {
-          const supportTickets = supportRes.data.tickets.map(t => ({
-            ...t,
-            isSupport: true,
-            status: t.resolved ? 'RESOLVED' : (t.adminNote ? 'REPLIED' : 'OPEN')
-          }));
-          combined = [...combined, ...supportTickets];
+        // 🦅 ONLY fetch bridge transaction tickets here. Support handles its own history now.
+        const bridgeRes = await axios.get(`/api/bridge/tickets/${userAddress}`);
+        
+        if (bridgeRes.data?.success) {
+          const sorted = bridgeRes.data.tickets.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+          setActiveTickets(sorted);
         }
-        combined.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
-        setActiveTickets(combined);
       } catch (err) {
         console.error("Heartbeat sync failed");
       }
@@ -106,7 +103,7 @@ const BridgeWidget = ({ userAddress, userWallets, balances, userMnemonic, kycSta
     fetchTickets();
     const ticker = setInterval(fetchTickets, 5000);
     return () => clearInterval(ticker);
-  }, [userAddress]);
+  }, [userAddress, activeTab]);
 
   useEffect(() => {
     if (!showIsoPortal || !userAddress || userAddress === "GUEST_MODE") return;
@@ -122,6 +119,66 @@ const BridgeWidget = ({ userAddress, userWallets, balances, userMnemonic, kycSta
     const ticker = setInterval(fetchIsoData, 5000);
     return () => clearInterval(ticker);
   }, [showIsoPortal, userAddress]);
+
+  // 🦅 1. Dynamic Balance Heartbeat (Every 15 seconds)
+  useEffect(() => {
+    if (!userAddress || userAddress === "GUEST_MODE") return;
+
+    const refreshBalances = async () => {
+      try {
+        const res = await axios.get(`https://seagull-xlm.xyz/api/wallet/balances/${userAddress}`);
+        if (res.data.success) {
+          if (typeof setBalances === 'function') setBalances(res.data.balances);
+        }
+      } catch (err) {
+        console.error("Balance sync pulse failed");
+      }
+    };
+
+    const pulse = setInterval(refreshBalances, 15000); 
+    return () => clearInterval(pulse);
+  }, [userAddress]);
+
+  // 🦅 PRODUCTION RATIO: NON-DESTRUCTIVE CONVERSATION RECOVERY HOOK
+  useEffect(() => {
+    let isMounted = true;
+    if (showSupport && userAddress && userAddress !== "GUEST_MODE") {
+      axios.get(`/api/bridge/support/history/${userAddress.toLowerCase()}`)
+        .then(res => {
+          if (!isMounted) return;
+          if (res.data?.success && res.data.tickets) {
+            const historyMessages = [];
+
+            // Re-construct conversation threads based on DB records chronologically
+            res.data.tickets.forEach(ticket => {
+              historyMessages.push({
+                id: `${ticket._id}-user`,
+                role: 'user',
+                text: ticket.issue,
+                timestamp: new Date(ticket.createdAt)
+              });
+
+              if (ticket.adminNote) {
+                historyMessages.push({
+                  id: `${ticket._id}-admin`,
+                  role: 'admin',
+                  text: ticket.adminNote,
+                  timestamp: new Date(ticket.updatedAt || ticket.createdAt)
+                });
+              }
+            });
+
+            setMessages(prev => {
+              const existingIds = new Set(prev.map(m => m.id).filter(Boolean));
+              const freshHistory = historyMessages.filter(m => !existingIds.has(m.id));
+              return [...freshHistory, ...prev].sort((a, b) => a.timestamp - b.timestamp);
+            });
+          }
+        })
+        .catch(err => console.error("🦅 SYSTEM STALL: Thread claim retrieval failure ->", err.message));
+    }
+    return () => { isMounted = false; };
+  }, [showSupport, userAddress]);
 
   useEffect(() => {
     if (target && userWallets) {
@@ -151,56 +208,54 @@ const BridgeWidget = ({ userAddress, userWallets, balances, userMnemonic, kycSta
     window.location.href = "/";
   };
 
-// This helper checks if a trustline exists in your balances array or was just created
-const hasActiveTrustline = (chain, asset) => {
-  // Maps SGCN/SGC/SEAGULLCOIN to 'SeagullCoin' and anything else to 'SeagullCash'
-  const isCoin = asset === 'SEAGULLCOIN' || asset === 'SGCN' || asset === 'SGC';
-  const assetKey = isCoin ? 'SeagullCoin' : 'SeagullCash';
+  const hasActiveTrustline = (chain, asset) => {
+    const isCoin = asset === 'SEAGULLCOIN' || asset === 'SGCN' || asset === 'SGC';
+    const assetKey = isCoin ? 'SeagullCoin' : 'SeagullCash';
 
-  const match = balances.some(b =>
-    b.chain === chain &&
-    (b.symbol === assetKey || b.symbol?.toUpperCase().includes('SG'))
-  );
+    const match = balances.some(b =>
+      b.chain === chain &&
+      (b.symbol === assetKey || b.symbol === asset)
+    );
 
-  return match || justActivated.includes(`${chain}_${assetKey}`);
-};
+    return match || justActivated.includes(`${chain}_${assetKey}`);
+  };
 
-
+  const triggerError = (msg) => {
+    setErrorToast({ show: true, msg: msg.toUpperCase() });
+    setTimeout(() => setErrorToast({ show: false, msg: "" }), 5000); 
+  };
 
   const handleCreateTicket = async (message) => {
-    if (!message.trim()) return;
+    if (!message || !message.trim()) return;
     const userMsg = { role: 'user', text: message, timestamp: new Date() };
     setMessages(prev => [...prev, userMsg]);
     try {
-      const res = await axios.post('https://seagull-xlm.xyz/api/bridge/support/ticket', {
+      const res = await axios.post('/api/bridge/support/ticket', {
         userId: userAddress,
         memo: "BRIDGE_WIDGET",
         issue: message,
-        email: userEmail
+        email: userEmail || 'no-email-provided@ecosystem.com' 
       });
       if (res.data.success) {
-        const supportRes = await axios.get(`https://seagull-xlm.xyz/api/bridge/support/history/${userAddress}`);
+        const supportRes = await axios.get(`/api/bridge/support/history/${userAddress}`);
+
         if (supportRes.data?.success) {
-          const freshSupport = supportRes.data.tickets.map(t => ({
+          const freshSupport = supportRes.data.tickets.map(t => ({ 
             ...t,
-            isSupport: true,
+            isSupport: true, 
             status: t.resolved ? 'RESOLVED' : (t.adminNote ? 'REPLIED' : 'OPEN')
           }));
+
           setActiveTickets(prev => {
             const bridgeOnly = prev.filter(ticket => !ticket.isSupport);
             return [...bridgeOnly, ...freshSupport].sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
           });
-        }
-        if (userEmail && userEmail.includes('@')) {
-          setUserHasSavedEmail(true);
-        }
-        setUserEmail('');
-        setAdminMsg('');
+        }                                                                                                   
         setMessages(prev => [...prev, { role: 'system', text: "🦅 Ticket Created. An admin will respond here shortly.", timestamp: new Date() }]);
       }
     } catch (err) {
       console.error("🦅 FAIL:", err.message);
-      setMessages(prev => [...prev, { role: 'system', text: "❌ Connection stalled. Try again." }]);
+      setMessages(prev => [...prev, { role: 'system', text: "❌ Connection stalled. Try again.", timestamp: new Date() }]);
     }
   };
 
@@ -210,7 +265,7 @@ const hasActiveTrustline = (chain, asset) => {
       switch (chain.toUpperCase()) {
         case 'XRPL':
           return xrpl.isValidAddress(address);
-        case 'XLM':
+        case 'XLM': 
           StellarSdk.Keypair.fromPublicKey(address);
           return true;
         case 'XDC':
@@ -218,11 +273,11 @@ const hasActiveTrustline = (chain, asset) => {
         case 'HBAR':
           return /^0\.0\.[0-9]+$/.test(address) || ethers.isAddress(address);
         case 'FLARE':
-        case 'FLR':
+        case 'FLR': 
         case 'ETH':
           return ethers.isAddress(address);
         default:
-          return true;
+          return true; 
       }
     } catch (e) {
       return false;
@@ -230,7 +285,7 @@ const hasActiveTrustline = (chain, asset) => {
   };
 
   const syncUserProfile = async () => {
-    if (!userAddress) return;
+    if (!userAddress) return; 
     try {
       const res = await axios.get(`https://seagull-xlm.xyz/api/bridge/user/profile/${userAddress}`);
       if (res.data.user && res.data.user.email) {
@@ -238,13 +293,13 @@ const hasActiveTrustline = (chain, asset) => {
         setUserHasSavedEmail(true);
       }
     } catch (err) {
-      console.error("Profile sync failed:", err);
+      console.error("Profile sync failed:", err); 
     }
   };
 
-  useEffect(() => {
+  useEffect(() => { 
     syncUserProfile();
-  }, [userAddress]);
+  }, [userAddress]); 
 
   const handleUserReply = async (ticketId, message) => {
     try {
@@ -259,35 +314,76 @@ const hasActiveTrustline = (chain, asset) => {
       console.error("🦅 REPLY ERROR:", err);
     }
   };
-
-  const handleResolveTicket = async (ticketId) => {
+  
+  // 🦅 THE IDENTITY RESOLVER
+  const resolveHederaIdentity = async (evmAddress) => {
     try {
-      const res = await axios.post('/api/bridge/admin/support/resolve', { ticketId });
-      if (res.data.success) {
-        const updated = await axios.get('/api/bridge/admin/support/all', {
-          headers: { 'x-admin-address': userAddress }
-        });
-        if (updated.data.success) {
-          const activeOnly = updated.data.tickets.filter(t => !t.resolved);
+        const response = await axios.get(
+            `https://mainnet-public.mirrornode.hedera.com/api/v1/accounts/${evmAddress}`
+        );
+        return response.data.account;
+    } catch (err) {
+        console.error("🪽 Hedera ID not found for this address."); 
+        return null;
+    }
+  };                                                                                                          
+
+  const handleResolveTicket = async (ticketId) => { 
+    try {
+      const finalAddr = String(userAddress || "0x870f64e73e7d2dc5022b4b74e58c323b3148a984").toLowerCase();
+      const res = await axios.post('https://seagull-xlm.xyz/api/bridge/support/resolve', {
+        ticketId, 
+        adminAddress: finalAddr
+      });
+
+      if (res.data.success) { 
+        const refreshRes = await axios.get(`https://seagull-xlm.xyz/api/bridge/support/all-tickets?adminAddress=${finalAddr}`);
+        if (refreshRes.data.success) {
+          const activeOnly = refreshRes.data.tickets.filter(t => !t.resolved);
           setActiveTickets(activeOnly);
         }
       }
     } catch (err) {
       console.error("🦅 RESOLVE STALL:", err.message);
+      alert("State modification failed: " + (err.response?.data?.message || err.message)); 
     }
   };
 
-
-    const handleExecuteSend = async () => {
+  const handleExecuteSend = async () => {
     const mnemonic = localStorage.getItem('secret') || userMnemonic;
-    if (!sendForm.amount || !sendForm.recipient) return alert("🪽 Details missing.");
-    if (!mnemonic || mnemonic === "null" || mnemonic === "undefined") {
-       return alert("🪽 Vault Locked: No secret found.");
+    if (!sendForm.amount || !sendForm.recipient) return triggerError("🪽 Details missing.");
+    if (!mnemonic || mnemonic === "null" || mnemonic === "undefined") { 
+      return triggerError("🪽 Vault Locked: No secret found.");
     }
 
+    setIsSending(true); 
+    
     try {
+      // 🦅 1. IMMEDIATE NATIVE HBAR BYPASS
+      if (isNativeMode && selectedAsset.chain === 'HBAR') { 
+        const response = await axios.post('https://seagull-xlm.xyz/api/wallet/broadcast', {
+          chain: 'HBAR', 
+          type: 'NATIVE_SDK',
+          asset: selectedAsset.asset, 
+          amount: sendForm.amount,
+          recipient: sendForm.recipient.trim(), 
+          memo: sendForm.memo,
+          senderAddress: userAddress 
+        });
+        if (response.data.success) {
+          setShowSendModal(false); 
+          setSendForm({ amount: '', recipient: '', memo: '' });
+          setUiMemoText(''); 
+          setSuccessMsg(`🦅 HBAR Native Settlement Confirmed!`);
+          setShowSuccess(true); 
+        } else {
+          throw new Error(response.data.detail || "SDK BROADCAST FAILED"); 
+        }
+        return; 
+      }
+      
       let signedBlob = [];
-      const total = parseFloat(sendForm.amount);
+      const total = parseFloat(sendForm.amount); 
       const feeAmt = (total * 0.005).toFixed(7);
       const netAmt = (total - parseFloat(feeAmt)).toFixed(7);
       const TREASURY_INT = {
@@ -303,20 +399,23 @@ const hasActiveTrustline = (chain, asset) => {
         const RPC_POOLS = {
           'FLARE': ['https://flare-api.flare.network/ext/C/rpc', 'https://rpc.ftso.au/flare'],
           'XDC':   ['https://xdc-rpc.blocksscan.io', 'https://rpc.ankr.com/xdc', 'https://xdcpay.xdc.network'],
-          'HBAR':  ['https://mainnet.hashio.io/v1', 'https://hedera-mainnet.public.blastapi.io']
+          'HBAR':  ['https://mainnet.hashio.io/v1', 'https://hedera-mainnet.public.blastapi.io'] 
         };
-
         const chainKey = selectedAsset.chain === 'FLR' ? 'FLARE' : selectedAsset.chain;
         const pools = RPC_POOLS[chainKey] || [];
         let provider, success = false;
 
-        let cleanRecipient;
+        let cleanRecipient; 
         try {
-          cleanRecipient = ethers.getAddress(sendForm.recipient.trim());
+          if (isNativeMode && selectedAsset.chain === 'HBAR') {
+            cleanRecipient = sendForm.recipient.trim();
+          } else {
+            cleanRecipient = ethers.getAddress(sendForm.recipient.trim());
+          }
         } catch (e) {
-          return alert("🪽INVALID ADDRESS: Address is malformed or wrong length.");
+          return triggerError("🪽INVALID ADDRESS: Use EVM (0x) tab for this address.");
         }
-
+        
         for (const url of pools) {
           try {
             const networkInfo = {
@@ -330,7 +429,7 @@ const hasActiveTrustline = (chain, asset) => {
           } catch (e) { console.warn(`🪽 Node ${url} failed.`); }
         }
 
-        if (!success) return alert("🪽ALL NODES BLOCKED.");
+        if (!success) return triggerError("🪽ALL NODES BLOCKED.");
 
         const wallet = ethers.Wallet.fromPhrase(mnemonic).connect(provider);
         const isNative = selectedAsset.asset === 'NATIVE' || ['XRP', 'XLM', 'HBAR', 'XDC', 'FLR'].includes(selectedAsset.asset);
@@ -351,75 +450,139 @@ const hasActiveTrustline = (chain, asset) => {
 
         const feeData = await provider.getFeeData();
 
+        if (chainKey === 'XDC') {
+          const amountWei = ethers.parseUnits(netAmt, 18);
+          const feeWei = ethers.parseUnits(feeAmt, 18);
+          const memoBytes = sendForm.memo ? ethers.hexlify(ethers.toUtf8Bytes(String(sendForm.memo).trim())) : "0x";
 
-          if (chainKey === 'XDC') {
-  // 🦅 Compile the plaintext memo string into clean hex bytes to attach to the data payload
-  const memoBytes = sendForm.memo ? ethers.hexlify(ethers.toUtf8Bytes(String(sendForm.memo).trim())) : "";
+          const isNative = selectedAsset.asset === 'NATIVE' || selectedAsset.asset === 'XDC';
+          const SGC_XDC_CONTRACT = '0xd38109F587bd0326CAd60a18CF3C1ECD546809a6';
 
-  const txResponse = await wallet.sendTransaction({
-    ...txData,
-    // If a memo exists, we append the hex bytes directly onto the compiled smart contract call data
-    data: memoBytes ? txData.data + memoBytes.slice(2) : txData.data,
-    nonce: await provider.getTransactionCount(wallet.address),
-    gasLimit: 140000, // Slightly increased gas limit to accommodate the extra message data bytes
-    gasPrice: feeData.gasPrice ?? ethers.parseUnits('35', 'gwei'),
-    chainId: 50
-  });
-  await txResponse.wait();
-  setShowSendModal(false);
-  setSendForm({ amount: '', recipient: '', memo: '' });
-  setSuccessMsg("🪽 SeagullCoin(XDC) is migrating!");
-  setShowSuccess(true);
-  return;
-}
+          if (isNative) {
+            const txResponse = await wallet.sendTransaction({
+              to: cleanRecipient,
+              value: amountWei,
+              data: memoBytes,
+              nonce: await provider.getTransactionCount(wallet.address, 'latest'),
+              gasLimit: 30000 + (memoBytes.length > 2 ? memoBytes.length * 10 : 0),
+              gasPrice: feeData.gasPrice ?? ethers.parseUnits('35', 'gwei'),
+              chainId: 50
+            });
 
+            await wallet.sendTransaction({
+              to: TREASURY_INT.EVM,
+              value: feeWei,
+              gasLimit: 21000,
+              gasPrice: feeData.gasPrice ?? ethers.parseUnits('35', 'gwei'),
+              chainId: 50
+            });
 
-                                  if (chainKey === 'HBAR') {
-          const SGC_CONTRACT = '0x00000000000000000000000000000000002f8a24';
-          const amountInHTS = ethers.parseUnits((parseFloat(sendForm.amount) * 0.995).toFixed(6), 6);
+            await txResponse.wait();
+          } else {
+            const contract = new ethers.Contract(SGC_XDC_CONTRACT, [
+              "function transfer(address to, uint256 amount)"
+            ], wallet);
 
-          const iface = new ethers.Interface(["function transfer(address to, uint256 amount)"]);
-          const encodedData = iface.encodeFunctionData("transfer", [cleanRecipient, amountInHTS]);
+            const txData = await contract.transfer.populateTransaction(cleanRecipient, amountWei);
+            const baseData = txData.data || "0x";
+            const combinedData = memoBytes !== "0x" ? baseData + memoBytes.slice(2) : baseData;
+            const dynamicGas = 160000 + (memoBytes.length > 2 ? (memoBytes.length / 2) * 20 : 0);
 
-const feeData = await provider.getFeeData();
+            const txResponse = await wallet.sendTransaction({
+              ...txData,
+              data: combinedData,
+              nonce: await provider.getTransactionCount(wallet.address, 'latest'),
+              gasLimit: Math.floor(dynamicGas),
+              gasPrice: feeData.gasPrice ?? ethers.parseUnits('35', 'gwei'),
+              chainId: 50
+            });
 
-          const txRequest = {
-            to: SGC_CONTRACT,
-            data: encodedData,
-            gasLimit: 500000,
-            gasPrice: feeData.gasPrice ?? ethers.parseUnits('30', 'gwei'),
-            nonce: await provider.getTransactionCount(wallet.address, 'latest'),
-            chainId: 295,
-            memo: sendForm.memo ? String(sendForm.memo).trim() : ""
-          };
-
-          // 1. Sign the transaction into a raw HEX string safely
-          const signedRawTx = await wallet.signTransaction(txRequest);
-
-          // 2. Broadcast cleanly using standard v6 method to get a true response object
-          const txResponse = await provider.broadcastTransaction(signedRawTx);
-
-          // 3. Now .wait() works perfectly because txResponse is a live transaction instance
-          await txResponse.wait();
+            await contract.transfer(TREASURY_INT.EVM, feeWei);
+            await txResponse.wait();
+          }
 
           setShowSendModal(false);
           setSendForm({ amount: '', recipient: '', memo: '' });
-          setSuccessMsg("🦅 HBAR Sovereign Funds Dispatched!");
+          setUiMemoText('');
+          setSuccessMsg(`🪽 XDC ${isNative ? 'Native' : 'SGC'} Settlement Confirmed!`);
           setShowSuccess(true);
           return;
         }
 
+        if (chainKey === 'HBAR') {
+          try {
+            if (isNativeMode) {
+              const response = await axios.post('https://seagull-xlm.xyz/api/wallet/broadcast', {
+                chain: 'HBAR',
+                type: 'NATIVE_SDK',
+                asset: selectedAsset.asset,
+                amount: sendForm.amount,
+                recipient: sendForm.recipient.trim(), 
+                memo: sendForm.memo,
+                senderAddress: userAddress
+              });
 
-        const tx1 = await wallet.signTransaction({
-          ...txData,
-          nonce: await provider.getTransactionCount(wallet.address),
-          gasLimit: isNative ? 21000 : 120000,
-          gasPrice: feeData.gasPrice ?? ethers.parseUnits('35', 'gwei'),
-          chainId: 14
-        });
-        signedBlob = [tx1];
-      }
-       else if (selectedAsset.chain === 'XRPL') {
+              if (response.data.success) {
+                setShowSendModal(false);
+                setSendForm({ amount: '', recipient: '', memo: '' });
+                setUiMemoText('');
+                setSuccessMsg(`🦅 HBAR Native Settlement Confirmed!`);
+                setShowSuccess(true);
+              } else {
+                throw new Error(response.data.detail || "SDK BROADCAST FAILED");
+              }
+              return; 
+            }
+
+            const isNative = selectedAsset.asset === 'NATIVE' || selectedAsset.asset === 'HBAR';
+            const decimals = isNative ? 18 : 6;
+            const finalAmount = ethers.parseUnits(String(netAmt), decimals);
+            const cleanRecipient = ethers.getAddress(sendForm.recipient.trim());
+
+            let txResponse;
+            if (isNative) {
+                txResponse = await wallet.sendTransaction({
+                    to: cleanRecipient,
+                    value: finalAmount,
+                    gasLimit: 150000n
+                });
+            } else {
+                const SGC_CONTRACT = '0x00000000000000000000000000000000002f8a24';                                          const iface = new ethers.Interface(["function transfer(address to, uint256 amount)"]);                      const encodedData = iface.encodeFunctionData("transfer", [cleanRecipient, finalAmount]);
+
+                txResponse = await wallet.sendTransaction({
+                    to: SGC_CONTRACT,
+                    data: encodedData,
+                    gasLimit: 800000n                                                                                   
+                });
+            }
+
+            await txResponse.wait();
+            setShowSendModal(false);
+            setSendForm({ amount: '', recipient: '', memo: '' });
+            setUiMemoText('');
+            const finalMsg = isNative
+              ? `🦅 HBAR EVM Settlement Confirmed.`
+              : `🦅 SeagullCash EVM Settlement Confirmed.`;
+            setSuccessMsg(finalMsg); 
+            setShowSuccess(true);
+            return; 
+
+          } catch (err) {
+            console.error("🦅 HBAR FAIL:", err);
+            const msg = String(err?.message || err);
+            let cleanMsg = "REVERTED";
+            if (msg.includes('10,000,000,000')) cleanMsg = "BELOW HEDERA MINIMUM";
+            if (msg.includes('insufficient funds')) cleanMsg = "LOW HBAR FOR GAS";
+            if (msg.includes('ENS')) cleanMsg = "USE EVM (0x) TAB FOR THIS ADDRESS";
+
+            triggerError(`HBAR FAILED: ${cleanMsg}`);
+            return;
+          } finally {
+            setIsSending(false);
+          }
+        }
+
+      } else if (selectedAsset.chain === 'XRPL') {
         const wallet = xrpl.Wallet.fromMnemonic(mnemonic);
         const client = new xrpl.Client("wss://xrplcluster.com");
         await client.connect();
@@ -436,16 +599,26 @@ const feeData = await provider.getFeeData();
             currency: currencyHex, issuer: issuer, value: feeAmt
         } : xrpl.xrpToDrops(feeAmt);
 
-        // 📝 XRPL DESTINATION TAG PARSING
         const parsedTag = sendForm.memo && !isNaN(sendForm.memo) ? parseInt(sendForm.memo, 10) : undefined;
+
+        let xrplMemos = [];
+        if (sendForm.memo && isNaN(sendForm.memo)) {
+            xrplMemos = [{
+                Memo: {
+                    MemoData: Buffer.from(String(sendForm.memo), 'utf8').toString('hex').toUpperCase()
+                }
+            }];
+        }
 
         const p1 = await client.autofill({
           TransactionType: "Payment",
           Account: wallet.address,
           Amount: amountObj,
           Destination: sendForm.recipient,
-          DestinationTag: parsedTag
+          DestinationTag: parsedTag,
+          Memos: xrplMemos 
         });
+
         const p2 = await client.autofill({
           TransactionType: "Payment",
           Account: wallet.address,
@@ -455,62 +628,80 @@ const feeData = await provider.getFeeData();
 
         signedBlob = [wallet.sign(p1).tx_blob, wallet.sign(p2).tx_blob];
         await client.disconnect();
+
       } else if (selectedAsset.chain === 'XLM') {
         const seed = await bip39.mnemonicToSeed(mnemonic);
         const derived = derivePath("m/44'/148'/0'", seed.toString('hex'));
         const keypair = StellarSdk.Keypair.fromRawEd25519Seed(derived.key);
         const server = new StellarSdk.Horizon.Server("https://horizon.stellar.org");
+
         const account = await server.loadAccount(keypair.publicKey());
 
-        const sghAsset = isSGH ? new StellarSdk.Asset('SeagullCash', 'GBC2VA3YMAIVB3A77VNRPKMQI3RAPDUDDP7JI2PE426MGKDDJFPRVWP7') : StellarSdk.Asset.native();
+        const sghAsset = isSGH
+          ? new StellarSdk.Asset('SeagullCash', 'GBC2VA3YMAIVB3A77VNRPKMQI3RAPDUDDP7JI2PE426MGKDDJFPRVWP7')
+          : StellarSdk.Asset.native();
 
-        // 📝 STELLAR MEMO ROUTING
         let stellarMemo = undefined;
-        if (sendForm.memo) {
-          const cleanMemo = String(sendForm.memo).trim();
-          stellarMemo = !isNaN(cleanMemo) && /^\d+$/.test(cleanMemo)
-            ? StellarSdk.Memo.id(cleanMemo)
-            : StellarSdk.Memo.text(cleanMemo);
+        if (sendForm.memo && String(sendForm.memo).trim() !== "") {
+          const m = String(sendForm.memo).trim();
+          stellarMemo = (!isNaN(m) && m.length <= 18)
+            ? StellarSdk.Memo.id(m)
+            : StellarSdk.Memo.text(m.substring(0, 28));
         }
 
-        const txBuilder = new StellarSdk.TransactionBuilder(account, { fee: StellarSdk.BASE_FEE, networkPassphrase: StellarSdk.Networks.PUBLIC })
-          .addOperation(StellarSdk.Operation.payment({ destination: sendForm.recipient, asset: sghAsset, amount: netAmt }))
-          .addOperation(StellarSdk.Operation.payment({ destination: TREASURY_INT.XLM, asset: sghAsset, amount: feeAmt }))
-          .setTimeout(30);
+        const txBuilder = new StellarSdk.TransactionBuilder(account, {
+            fee: StellarSdk.BASE_FEE,
+            networkPassphrase: StellarSdk.Networks.PUBLIC
+          })
+          .addOperation(StellarSdk.Operation.payment({
+            destination: sendForm.recipient.trim(),
+            asset: sghAsset,
+            amount: String(netAmt) 
+          }))
+          .addOperation(StellarSdk.Operation.payment({
+            destination: TREASURY_INT.XLM,
+            asset: sghAsset,
+            amount: String(feeAmt) 
+          }))
+          .setTimeout(60);
 
-        if (stellarMemo) {
-          txBuilder.addMemo(stellarMemo);
-        }
+        if (stellarMemo) txBuilder.addMemo(stellarMemo);
 
         const tx = txBuilder.build();
         tx.sign(keypair);
-        signedBlob = [tx.toXDR()];
+
+        signedBlob = [tx.toXDR().toString()];
       }
 
       const response = await axios.post('/api/wallet/broadcast', { chain: selectedAsset.chain, signedBlob: signedBlob[0] });
+
       if (response.data.success) {
           setShowSendModal(false);
           setSendForm({ amount: '', recipient: '', memo: '' });
+          setUiMemoText('');
           setSuccessMsg("🪽 Seagull Assets are Migrating!");
           setShowSuccess(true);
       }
     } catch (err) {
-        alert(`SEND FAILED: ${err.message}`);
+        console.error("🦅 SEND FAIL:", err);
+        const msg = err.response?.data?.detail || err.message;
+        triggerError(`SEND FAILED: ${msg}`);
+    } finally {
+        setIsSending(false);
     }
   };
 
-
- const handleExecuteTrustline = async (net) => {
+  const handleExecuteTrustline = async (net) => {
     const rowAsset = net.asset?.toUpperCase() || '';
     if (rowAsset === 'XRP' || rowAsset === 'XLM') {
-       return alert("⚡ ACTION REQUIRED: Please fund this account with at least 10 XRP or 1 XLM before adding tokens.");
+       return triggerError("⚡ ACTION REQUIRED: Please fund this account with at least 10 XRP or 1 XLM before adding tokens.");
     }
 
     const raw = localStorage.getItem('secret');
     const mnemonic = raw ? raw.replace(/['"]+/g, '').trim() : null;
-    if (!mnemonic) return alert("🪽 VAULT LOCKED: Secret not found.");
+    if (!mnemonic) return triggerError("🪽 VAULT LOCKED: Secret not found.");
 
-   const assetKey = net.name.includes('Cash') ? 'SeagullCash' : 'SeagullCoin';
+    const assetKey = net.name.includes('Cash') ? 'SeagullCash' : 'SeagullCoin';
     setIsProcessingTrust(`${net.chain}_${assetKey}`);
 
     try {
@@ -523,7 +714,6 @@ const feeData = await provider.getFeeData();
         const client = new xrpl.Client("wss://xrplcluster.com");
         await client.connect();
 
-        // 🦅 Added explicit fee to prevent '400' on congested nodes
         const tx = await client.autofill({
           TransactionType: "TrustSet",
           Account: wallet.address,
@@ -534,8 +724,8 @@ const feeData = await provider.getFeeData();
             value: "1000000000"
           }
         });
- 
-      const result = await client.submitAndWait(wallet.sign(tx).tx_blob);
+
+        const result = await client.submitAndWait(wallet.sign(tx).tx_blob);
         await client.disconnect();
 
         if (result.result.meta.TransactionResult === "tesSUCCESS") {
@@ -552,7 +742,6 @@ const feeData = await provider.getFeeData();
         const keypair = StellarSdk.Keypair.fromRawEd25519Seed(derived.key);
         const server = new StellarSdk.Horizon.Server("https://horizon.stellar.org");
 
-        // 🦅 Using server.loadAccount ensures we have the latest sequence number
         const account = await server.loadAccount(keypair.publicKey());
         const tx = new StellarSdk.TransactionBuilder(account, {
             fee: StellarSdk.BASE_FEE,
@@ -573,36 +762,33 @@ const feeData = await provider.getFeeData();
         setShowSuccess(true);
       }
     } catch (err) {
-        // 🦅 Enhanced error reporting for the 400 issues
         const errorDetail = err.response?.data?.detail || err.message;
         alert(`ACTIVATION FAILED: ${errorDetail}`);
-       } finally {
-         setIsProcessingTrust(null);
+    } finally {
+        setIsProcessingTrust(null);
     }
-};
+  };
 
- const handleGenerateTicket = async () => {
-  try {
-    if (!txDetails.amount || !txDetails.destinationAddress) return alert(" 🪽 Missing details.");
+  const handleGenerateTicket = async () => {
+    try {
+      if (!txDetails.amount || !txDetails.destinationAddress) return triggerError(" 🪽 Missing details.");
 
-    // 🦅 Ensure userId is the exact address the backend uses to index the user
-    const response = await axios.post('/api/bridge/intent', {
-      amount: String(txDetails.amount).trim(),
-      symbol: source.asset,
-      fromChain: source.chain,
-      toChain: target.chain,
-      destinationAddress: txDetails.destinationAddress.trim(),
-      userId: userAddress // Verify if your DB uses 0x or native address as the ID
-    });
+      const response = await axios.post('/api/bridge/intent', {
+        amount: String(txDetails.amount).trim(),
+        symbol: source.asset,
+        fromChain: source.chain,
+        toChain: target.chain,
+        destinationAddress: txDetails.destinationAddress.trim(),
+        userId: userAddress 
+      });
 
-    if (response.data.success) {
-      setServerMemo(response.data.memo);
-      setServerDepositAddr(response.data.depositAddress);
-      setShowModal(true);
-    }
-  } catch (err) { alert(`BRIDGE STALL: ${err.message}`); }
-};
-
+      if (response.data.success) {
+        setServerMemo(response.data.memo);
+        setServerDepositAddr(response.data.depositAddress);
+        setShowModal(true);
+      }
+    } catch (err) { triggerError(`BRIDGE STALL: ${err.message}`); }
+  };
 
   const walletRows = [
     { name: 'XRP',          asset: 'XRP',   chain: 'XRPL',  icon: 'https://files.catbox.moe/6j4qjr.png' },
@@ -634,7 +820,15 @@ const feeData = await provider.getFeeData();
     <div style={containerStyle}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: '1px solid #222', marginBottom: '20px' }}>
         <div style={{ display: 'flex', flex: 1 }}>
-          {(userAddress === "GUEST_MODE" ? ['BRIDGE', 'TICKETS'] : ['BRIDGE', 'SOVEREIGN WALLET', 'TICKETS']).map(tab => (
+          {(userAddress === "GUEST_MODE"
+            ? ['BRIDGE', 'TICKETS']
+            : [
+                'BRIDGE',
+                'SOVEREIGN WALLET',
+                'TICKETS',
+                ...(userAddress?.toLowerCase() === "0x870f64e73e7d2dc5022b4b74e58c323b3148a984".toLowerCase() ? ['ADMIN'] : [])
+              ]
+          ).map((tab) => (
             <button
               key={tab}
               onClick={() => setActiveTab(tab)}
@@ -668,12 +862,8 @@ const feeData = await provider.getFeeData();
               marginLeft: '10px'
             }}
           >
-
-
             🔴 LOGOUT
-
-
-</button>
+          </button>
         )}
       </div>
 
@@ -699,10 +889,171 @@ const feeData = await provider.getFeeData();
         </div>
       )}
 
-{activeTab === 'BRIDGE' && (
+      {/* 🦅 REFINED CAYENNE ERROR TOAST */}
+      {errorToast.show && (
+        <div style={{
+          position: 'fixed',
+          bottom: '110px',
+          left: '50%',
+          transform: 'translateX(-50%)',
+          background: 'linear-gradient(135deg, #8b3a2b, #2a0f0a)',
+          color: '#e0e0e0',
+          padding: '14px 28px',
+          borderRadius: '12px',
+          fontSize: '11px',
+          fontWeight: 'bold',
+          zIndex: 10005,
+          boxShadow: '0 8px 32px rgba(0, 0, 0, 0.8), inset 0 0 10px rgba(139, 58, 43, 0.3)',
+          display: 'flex',
+          alignItems: 'center',
+          gap: '15px',
+          border: '1px solid #4a1e16',
+          letterSpacing: '1.2px',
+          minWidth: '300px',
+          backdropFilter: 'blur(4px)'
+        }}>
+          <span style={{ color: '#ff6b4a', fontSize: '14px' }}>⚠️</span>
+          <div style={{ flex: 1, textTransform: 'uppercase' }}>{errorToast.msg}</div>
+          <button
+            onClick={() => setErrorToast({ show: false, msg: "" })}
+            style={{
+              background: 'transparent',
+              border: '1px solid #4a1e16',
+              color: '#666',
+              cursor: 'pointer',
+              borderRadius: '4px',
+              padding: '2px 6px',
+              fontSize: '10px'
+            }}
+          >✕</button>
+        </div>
+      )}
+
+      {/* 🦅 NATIVE ADMIN PANEL RENDER BLOCK */}
+      {activeTab === 'ADMIN' && userAddress?.toLowerCase() === "0x870f64e73e7d2dc5022b4b74e58c323b3148a984".toLowerCase() && (
+        <div style={{ background: '#0a0a0a', padding: '16px', borderRadius: '12px', border: '1px solid #111', marginTop: '10px' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '15px' }}>
+            <h3 style={{ color: '#00d4ff', fontSize: '13px', fontWeight: 'bold', margin: 0, letterSpacing: '0.5px' }}>🦅 LIVE CORE SUPPORT QUEUE</h3>
+            <button
+              onClick={async () => {
+                try {                                                                                                         
+                  const finalAddr = String(userAddress || "0x870f64e73e7d2dc5022b4b74e58c323b3148a984").toLowerCase();
+                  const res = await axios.get(`https://seagull-xlm.xyz/api/bridge/support/all-tickets?adminAddress=${finalAddr}`);
+                  if (res.data.success) {
+                    setActiveTickets(res.data.tickets);
+                  }
+                } catch (err) {
+                  alert("Sync failed: Verify backend connection or wallet authorization.");
+                }
+              }}
+              style={{ background: '#00d4ff', color: '#000', border: 'none', borderRadius: '6px', padding: '6px 12px', fontSize: '10px', fontWeight: 'bold', cursor: 'pointer' }}
+            >
+              🔄 REFRESH QUEUE
+            </button>
+          </div>
+
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', maxHeight: '320px', overflowY: 'auto' }}>
+            {(!activeTickets || activeTickets.filter(ticket => !ticket.resolved && ticket.issue).length === 0) ? (
+              <p style={{ color: '#444', fontSize: '11px', textAlign: 'center', padding: '20px' }}>Hit refresh to load real-time communications cache...</p>
+            ) : (
+              activeTickets.filter(ticket => !ticket.resolved && ticket.issue).map((ticket) => (
+
+                <div key={ticket._id} style={{ background: '#000', border: '1px solid #111', borderRadius: '8px', padding: '12px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '10px', color: '#666', marginBottom: '6px' }}>
+                    <span>USER: <strong style={{ color: '#00d4ff' }}>{ticket.userId ? `${ticket.userId.slice(0,6)}...${ticket.userId.slice(-4)}` : 'UNKNOWN'}</strong></span>
+                    <span style={{ color: ticket.resolved ? '#00ffcc' : '#ff4444', fontWeight: 'bold' }}>{ticket.resolved ? 'RESOLVED' : 'OPEN'}</span>
+                  </div>
+
+                  <div style={{ background: '#050505', padding: '8px', borderRadius: '6px', border: '1px solid #111', marginBottom: '10px' }}>
+                    <p style={{ color: '#e0e0e0', fontSize: '11px', margin: 0, lineHeight: '1.4' }}><strong>Issue:</strong> {ticket.issue || "⚠️ No issue description text stored"}</p>
+                    {ticket.email && <span style={{ fontSize: '9px', color: '#555', display: 'block', marginTop: '4px' }}>Contact: {ticket.email}</span>}
+                  </div>
+
+                  {ticket.adminNote && (
+                    <div style={{ background: 'rgba(0, 212, 255, 0.05)', padding: '8px', borderRadius: '6px', border: '1px solid rgba(0, 212, 255, 0.1)', marginBottom: '10px' }}>
+                      <p style={{ color: '#00d4ff', fontSize: '11px', margin: 0 }}><strong>Previous Reply:</strong> {ticket.adminNote}</p>
+                    </div>
+                  )}
+
+                  <div style={{ display: 'flex', gap: '6px' }}>
+                    <input
+                      id={`reply-text-${ticket._id}`}
+                      placeholder="Type network adjustment update statement..."
+                      style={{ flex: 1, padding: '6px 10px', background: '#050505', color: '#fff', border: '1px solid #1a1a1a', borderRadius: '6px', fontSize: '11px' }}
+                      onKeyDown={async (e) => {
+                        if (e.key === 'Enter') {
+                          const btn = document.getElementById(`reply-btn-${ticket._id}`);
+                          if (btn) btn.click();
+                        }
+                      }}
+                    />
+                    <button
+                      id={`reply-btn-${ticket._id}`}
+                      onClick={async () => {
+                        const txtEl = document.getElementById(`reply-text-${ticket._id}`);
+                        if (!txtEl || !txtEl.value.trim()) return;
+                        try {
+                          const finalAddr = String(userAddress || "0x870f64e73e7d2dc5022b4b74e58c323b3148a984").toLowerCase();
+
+                          const res = await axios.post('https://seagull-xlm.xyz/api/bridge/support/reply', {
+                            ticketId: ticket._id,
+                            adminAddress: finalAddr,
+                            adminResponse: txtEl.value.trim()
+                          });
+                          if (res.data.success) {
+                            txtEl.value = '';
+                            const refreshRes = await axios.get(`https://seagull-xlm.xyz/api/bridge/support/all-tickets?adminAddress=${finalAddr}`);
+                            if (refreshRes.data.success) setActiveTickets(refreshRes.data.tickets);
+                          }
+                        } catch (err) {
+                          alert("Dispatch broken: Authorization signature rejection.");
+                        }
+                      }}
+                      style={{ background: '#00ffcc', color: '#000', border: 'none', borderRadius: '6px', padding: '0 14px', fontSize: '10px', fontWeight: 'bold', cursor: 'pointer' }}
+                    >
+                      SEND
+                    </button>
+                  </div>
+                  
+                  {!ticket.resolved && (
+                    <div style={{ marginTop: '8px', display: 'flex', justifyContent: 'flex-end' }}>
+                      <button
+                        onClick={async () => {
+                          try {
+                            const finalAddr = String(userAddress || "0x870f64e73e7d2dc5022b4b74e58c323b3148a984").toLowerCase();
+                            const res = await axios.post('https://seagull-xlm.xyz/api/bridge/support/resolve', {
+                              ticketId: ticket._id,
+                              adminAddress: finalAddr
+                            });
+
+                            if (res.data.success) {
+                              const refreshRes = await axios.get(`https://seagull-xlm.xyz/api/bridge/support/all-tickets?adminAddress=${finalAddr}`);
+                              if (refreshRes.data.success) {
+                                const activeOnly = refreshRes.data.tickets.filter(t => !t.resolved);
+                                setActiveTickets(activeOnly);
+                              }
+                            }
+                          } catch (err) {
+                            alert("State modification failed: Action unauthorized.");
+                          }
+                        }}
+                        style={{ background: 'rgba(255, 68, 68, 0.1)', color: '#ff4444', border: '1px solid #ff4444', borderRadius: '6px', padding: '4px 10px', fontSize: '9px', fontWeight: 'bold', cursor: 'pointer' }}
+                      >
+                        ✔ RESOLVE TICKET
+                      </button>
+                    </div>
+                  )}
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+      )}
+
+      {activeTab === 'BRIDGE' && (
         <div style={groupStyle}>
           <p style={{ fontSize: '10px', color: '#ffcc00', textAlign: 'center', margin: '0 0 15px 0', fontWeight: 'bold', letterSpacing: '1px' }}>
-            ISO-Bridge: ✅ SeagullCash
+            ISO-Bridge: ⚠️ Under Construction 🚧
           </p>
           <label style={labelStyle}>ASSET TO CONVERT</label>
           <select value={txDetails.fromOptionId} onChange={(e) => setTxDetails({...txDetails, fromOptionId: e.target.value})} style={inputStyle}>
@@ -714,8 +1065,7 @@ const feeData = await provider.getFeeData();
                 return true;
               })
               .map(opt => <option key={opt.id} value={opt.id} style={{color:'#000'}}>{opt.label}</option>)}
-          </select>
-
+          </select>                                                                                         
           <label style={labelStyle}>RECEIVE AS</label>
           <select value={txDetails.toOptionId} onChange={(e) => setTxDetails({...txDetails, toOptionId: e.target.value})} style={inputStyle}>
             {SOVEREIGN_OPTIONS
@@ -742,7 +1092,8 @@ const feeData = await provider.getFeeData();
                 let dailyLimit = 1000000;
 
                 if (kycStatus === "TIER_1_VERIFIED") {
-                  dailyLimit = isSGC ? 500000 : 1000000000;                                                                                                               } else if (kycStatus === "TIER_2_INSTITUTIONAL") {
+                  dailyLimit = isSGC ? 500000 : 1000000000;
+                } else if (kycStatus === "TIER_2_INSTITUTIONAL") {
                   dailyLimit = isSGC ? 333333 : 333333333;
                 } else {
                   dailyLimit = isSGC ? 10000 : 1000000;
@@ -759,7 +1110,8 @@ const feeData = await provider.getFeeData();
                 border: limitError ? '1.5px solid #ff3333' : '1px solid #111',
                 transition: 'border-color 0.2s ease'
               }}
-            />                                                                                                                                                        {limitError && (
+            />
+            {limitError && (
               <p style={{ color: '#ff3333', fontSize: '10px', fontFamily: 'monospace', fontWeight: 'bold', margin: '2px 0 0 0', letterSpacing: '0.5px' }}>
                 ⚠️ {limitError}
               </p>
@@ -768,36 +1120,35 @@ const feeData = await provider.getFeeData();
           <p style={{ fontSize: '11px', color: '#00d4ff', marginTop: '-5px', fontWeight: 'bold', marginBottom: '15px' }}>
             Est. Receipt: {estPayout} {target?.asset}
           </p>
-
+                                                                                                                      
           {/* 🦅 DYNAMIC TRUSTLINE WARNING (Hybrid Logic) */}
-{(target?.chain === 'XRPL' || target?.chain === 'XLM') && target?.asset !== 'NATIVE' && (
-  !hasActiveTrustline(target.chain, target.asset) && (
-    <div style={{ margin: '10px 0', padding: '12px', background: 'rgba(255, 204, 0, 0.05)', border: '1px solid #ffcc00', borderRadius: '12px', borderStyle: 'dashed' }}>
-      <p style={{ margin: 0, fontSize: '10px', color: '#ffcc00', fontWeight: 'bold' }}>
-        ⚠️ TRUSTLINE REQUIRED: Destination ledger needs activation.
-      </p>
+          {(target?.chain === 'XRPL' || target?.chain === 'XLM') && target?.asset !== 'NATIVE' && (
+            !hasActiveTrustline(target.chain, target.asset) && (
+              <div style={{ margin: '10px 0', padding: '12px', background: 'rgba(255, 204, 0, 0.05)', border: '1px solid #ffcc00', borderRadius: '12px', borderStyle: 'dashed' }}>
+                <p style={{ margin: 0, fontSize: '10px', color: '#ffcc00', fontWeight: 'bold' }}>
+                  ⚠️ TRUSTLINE REQUIRED: Destination ledger needs activation.
+                </p>
 
-      <button                                                                                                                                                     onClick={() => {
-          if (userAddress !== "GUEST_MODE") {
-            // Logic for Logged-in Users: Automated Execution
-            const assetKey = target.asset === 'SEAGULLCOIN' ? 'SeagullCoin' : 'SeagullCash';
-            handleExecuteTrustline({ chain: target.chain, name: assetKey });
-          } else {
-            // Logic for Guest Mode: External Links
-            if (target.chain === 'XRPL') {
-              window.open(`https://xrpl.services/?issuer=rNHeGnj4kqGSVyFzDcoyi3gsp1bdPuGeNK&currency=53656167756C6C43617368000000000000000000&limit=979633950275.5339`, '_blank');
-            } else if (target.chain === 'XLM') {
-              window.open(`https://scopuly.com/trustline/SeagullCash-GBC2VA3YMAIVB3A77VNRPKMQI3RAPDUDDP7JI2PE426MGKDDJFPRVWP7`, '_blank');
-            }
-          }                                                                                                                                                       }}
-        style={{ background: 'none', border: 'none', color: '#00d4ff', fontSize: '10px', fontWeight: 'bold', textDecoration: 'underline', cursor: 'pointer', marginTop: '5px', padding: 0 }}
-      >
-        {userAddress === "GUEST_MODE" ? '⚡ ACTIVATE TRUSTLINE NOW ↗' : '⚡ AUTO-ESTABLISH TRUSTLINE NOW'}
-      </button>
-    </div>
-  )
-)}
-
+                <button
+                  onClick={() => {
+                    if (userAddress !== "GUEST_MODE") {
+                      const assetKey = target.asset === 'SEAGULLCOIN' ? 'SeagullCoin' : 'SeagullCash';
+                      handleExecuteTrustline({ chain: target.chain, name: assetKey });
+                    } else {
+                      if (target.chain === 'XRPL') {
+                        window.open(`https://xrpl.services/?issuer=rNHeGnj4kqGSVyFzDcoyi3gsp1bdPuGeNK&currency=53656167756C6C43617368000000000000000000&limit=979633950275.5339`, '_blank');
+                      } else if (target.chain === 'XLM') {
+                        window.open(`https://scopuly.com/trustline/SeagullCash-GBC2VA3YMAIVB3A77VNRPKMQI3RAPDUDDP7JI2PE426MGKDDJFPRVWP7`, '_blank');
+                      }
+                    }
+                  }}
+                  style={{ background: 'none', border: 'none', color: '#00d4ff', fontSize: '10px', fontWeight: 'bold', textDecoration: 'underline', cursor: 'pointer', marginTop: '5px', padding: 0 }}
+                >
+                  {userAddress === "GUEST_MODE" ? '⚡ ACTIVATE TRUSTLINE NOW ↗' : '⚡ AUTO-ESTABLISH TRUSTLINE NOW'}
+                </button>
+              </div>
+            )
+          )}
 
           <label style={labelStyle}>DESTINATION ADDRESS</label>
           <input
@@ -810,12 +1161,12 @@ const feeData = await provider.getFeeData();
             }}
           />
 
-{txDetails.destinationAddress && !isValidAddress(target?.chain, txDetails.destinationAddress) && (
+          {txDetails.destinationAddress && !isValidAddress(target?.chain, txDetails.destinationAddress) && (
             <p style={{ color: '#ff4444', fontSize: '10px', marginTop: '5px', fontWeight: 'bold' }}>
               ⚠️ INVALID {target?.chain} FORMAT (Check Prefix/Length)
             </p>
           )}
-
+                                                                                                                      
           {!txDetails.destinationAddress && (
             <div style={{ marginTop: '8px' }}>
               {target?.chain === 'HBAR' && (
@@ -845,138 +1196,191 @@ const feeData = await provider.getFeeData();
         </div>
       )}
 
-         {activeTab === 'SOVEREIGN WALLET' && (
-  <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', maxHeight: '400px', overflowY: 'auto' }}>
-    {walletRows.map(net => {
-      const rowAsset = net.asset?.toUpperCase() || '';
-      const chainUpper = net.chain?.toUpperCase() || '';
+      {activeTab === 'SOVEREIGN WALLET' && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', maxHeight: '400px', overflowY: 'auto' }}>
+          {walletRows.map(net => {
+            const rowAsset = net.asset?.toUpperCase() || '';
+            const chainUpper = net.chain?.toUpperCase() || '';
 
-      const factualEntry = balances.find(b => {
-        const apiSym = b.symbol?.toUpperCase() || '';
-        const matchXRP = (chainUpper === 'XRPL' && (apiSym === 'SGCN' || apiSym === 'SEAGULLCOIN' || apiSym === 'SGC') && (rowAsset === 'SGCN' || rowAsset === 'SGC' || rowAsset === 'XRP'));
-        const matchXLM = (chainUpper === 'XLM' && (apiSym === 'SGCSH' || apiSym === 'SEAGULLCASH' || apiSym === 'SGH') && (rowAsset === 'SEAGULLCASH' || rowAsset === 'SGH' || rowAsset === 'XLM'));
-        const matchEVM = (['XDC', 'HBAR', 'FLARE'].includes(chainUpper) && (apiSym === rowAsset || apiSym.includes(rowAsset) || rowAsset.includes(apiSym)));
-        return (matchEVM || matchXRP || matchXLM || apiSym === rowAsset) && b.chain === net.chain;
-      });
+            const factualEntry = balances.find(b => {
+              const apiSym = b.symbol?.toUpperCase() || '';
 
-      // 🦅 FIXED: Prevents 0x fallback for Trust Line rows by forcing native mapping
-      let addr = factualEntry?.address; 
+              if (rowAsset === 'XRP' || rowAsset === 'XLM') {
+                return apiSym === rowAsset && b.chain === net.chain;
+              }
 
-      if (!addr) {
-        if (chainUpper === 'XRPL') {
-          addr = net.wallets?.xrpl; // Map to r-address for XRPL tokens
-        } else if (chainUpper === 'XLM') {
-          addr = net.wallets?.stellar; // Map to G-address for XLM tokens
-        } else {
-          addr = userAddress; // Standard fallback for EVM/HBAR
-        }
-      }
+              const matchXRP = (chainUpper === 'XRPL' && (
+                ((rowAsset === 'SGCN' || rowAsset === 'SGC') && (apiSym === 'SGCN' || apiSym === 'SGC' || apiSym === 'SEAGULLCOIN')) ||
+                ((rowAsset === 'SGCSH' || rowAsset === 'SGH') && (apiSym === 'SGCSH' || apiSym === 'SGH' || apiSym === 'SEAGULLCASH'))
+              ));
 
-      const bal = factualEntry ? factualEntry.balance : '0.00';
-      const balanceNum = parseFloat(bal) || 0;
-      const trustlineExists = hasActiveTrustline(net.chain, rowAsset);
+              const matchXLM = (chainUpper === 'XLM' &&
+                (apiSym === 'SGCSH' || apiSym === 'SEAGULLCASH' || apiSym === 'SGH') &&
+                (rowAsset === 'SEAGULLCASH' || rowAsset === 'SGH'));
 
-      let buttonText = 'SEND';
-      let isActive = true;
+              const matchEVM = (['XDC', 'HBAR', 'FLARE'].includes(chainUpper) &&
+                (apiSym === rowAsset || apiSym.includes(rowAsset) || rowAsset.includes(apiSym)));
 
-      if (chainUpper === 'XRPL' || chainUpper === 'XLM') {
-        if (rowAsset === 'XRP' || rowAsset === 'XLM') {
-          if (balanceNum > 0 || justActivated.includes(net.name)) {
-            buttonText = 'SEND';
-            isActive = true;
-          } else {
-            buttonText = 'ACTIVATE';
-            isActive = false;
-          }
-        } else {
-          if (factualEntry || trustlineExists) {
-            buttonText = 'SEND';
-            isActive = true;
-          } else {
-            buttonText = 'TRUST';
-            isActive = false;
-          }
-        }
-      }
+              return (matchEVM || matchXRP || matchXLM) && b.chain === net.chain;
+            });
 
-      const displayBalance = isNaN(balanceNum) ? '0.00' : balanceNum.toLocaleString(undefined, { minimumFractionDigits: 2 });
+            let addr = factualEntry?.address;                                                                     
+            if (!addr) {
+              if (chainUpper === 'XRPL') {
+                addr = net.wallets?.xrpl; 
+              } else if (chainUpper === 'XLM') {
+                addr = net.wallets?.stellar; 
+              } else {
+                addr = userAddress; 
+              }
+            }
 
-      return (
-        <div key={`${net.chain}-${rowAsset}-${net.name}`} style={deckRow}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-            <div style={logoStyle}>
-              <img src={net.icon} alt={net.name} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
-            </div>
-            <div>
-              <p style={{ margin: 0, fontSize: '13px', fontWeight: 'bold' }}>{net.name}</p>
-              <p style={{ margin: 0, fontSize: '12px', color: '#00ffcc', fontWeight: 'bold' }}>
-                {displayBalance} {net.chain}
-              </p>
-            </div>
-          </div>
+            const trustlineExists = hasActiveTrustline(
+              net.chain,
+              (rowAsset === 'SGCN' || rowAsset === 'SGC' || rowAsset === 'SEAGULLCOIN') ? 'SEAGULLCOIN' : 'SEAGULLCASH'
+            );
 
-          <div style={{ textAlign: 'right' }}>
-            <p style={{ margin: 0, fontSize: '9px', color: '#444', marginBottom: '4px', fontFamily: 'monospace' }}>
-              {addr ? `${addr.slice(0, 6)}...${addr.slice(-4)}` : ''}
-            </p>
-            <div style={{ display: 'flex', gap: '5px', justifyContent: 'flex-end' }}>
-              <button
-                onClick={() => handleCopy(addr)}
-                style={{
-                  borderColor: '#00e5ff',
-                  color: '#00e5ff',
-                  background: 'transparent',
-                  cursor: addr ? 'pointer' : 'not-allowed',
-                  fontSize: '10px',
-                  padding: '4px 8px',
-                  borderRadius: '4px'
-                }}
-              >
-                                COPY
-              </button>
+            const bal = factualEntry ? factualEntry.balance : '0.00';
+            const balanceNum = parseFloat(bal) || 0;
 
-              <button
-  onClick={() => {
-    if (buttonText === 'SEND') {
-      setSelectedAsset({ ...net, currentBalance: bal });
-      setShowSendModal(true);
-    } else if (buttonText === 'ACTIVATE') {
-      setSelectedAsset({ ...net, activationAddress: addr });
-      setShowActivateModal(true);
-    } else if (buttonText === 'TRUST') {
-      handleExecuteTrustline(net);
-    }
-  }}
-  disabled={isProcessingTrust === `${net.chain}_${(rowAsset === 'SGCN' || rowAsset === 'SGC' || rowAsset === 'SEAGULLCOIN') ? 'SeagullCoin' : 'SeagullCash'}`}
-                style={{
-    ...sendBtnStyle,
-    background: isActive ? '#00ffcc' : (isProcessingTrust ? '#444' : '#00d4ff'),
-    color: '#000',
-    fontSize: buttonText === 'TRUST' ? '10px' : '11px',
-    cursor: isProcessingTrust ? 'not-allowed' : 'pointer',
-    display: 'flex',
-    alignItems: 'center',
-    gap: '5px'
-  }}
->
-{isProcessingTrust === `${net.chain}_${(rowAsset === 'SGCN' || rowAsset === 'SGC' || rowAsset === 'SEAGULLCOIN') ? 'SeagullCoin' : 'SeagullCash'}` ? (
-    <>
-      <span className="spinner"></span> PROCESSING...
-    </>
-  ) : (
-    buttonText
-  )}                                                                                                                                   
- </button>
-            </div>
-          </div>
+            let buttonText = 'SEND';
+            let isActive = true;
+
+            if (chainUpper === 'XRPL' || chainUpper === 'XLM') {
+              if (rowAsset === 'XRP' || rowAsset === 'XLM') {
+                if (balanceNum > 0 || justActivated.includes(net.name)) {
+                  buttonText = 'SEND';
+                  isActive = true;
+                } else {
+                  buttonText = 'ACTIVATE';
+                  isActive = false;
+                }
+              } else {
+                if (factualEntry || trustlineExists) {
+                  buttonText = 'SEND';
+                  isActive = true;
+                } else {
+                  buttonText = 'TRUST';
+                  isActive = false;
+                }
+              }
+            }
+
+            const displayBalance = isNaN(balanceNum) ? '0.00' : balanceNum.toLocaleString(undefined, { minimumFractionDigits: 2 });
+            const isHbarChain = chainUpper === 'HBAR';
+            const finalDisplayAddr = (isHbarChain && hederaView === 'NATIVE') ? resolvedHbarId : addr;
+            
+                        return (
+              <div key={`${net.chain}-${rowAsset}-${net.name}`} style={deckRow}>
+                
+                {/* 🦅 LEFT SIDE: flex: 1 and minWidth: 0 prevents the massive balance from acting like a wedge */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flex: 1, minWidth: 0, marginRight: '10px' }}>
+                  <div style={logoStyle}>
+                    <img src={net.icon} alt={net.name} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                  </div>
+                  
+                  {/* TEXT CONTAINER: Forces long numbers/names to truncate with ... instead of pushing the UI */}
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <p style={{ margin: 0, fontSize: '13px', fontWeight: 'bold', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                      {net.name}
+                    </p>
+                    <p style={{ margin: 0, fontSize: '12px', color: '#00ffcc', fontWeight: 'bold', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                      {displayBalance} {net.chain}
+                    </p>
+                  </div>
+                </div>
+
+                {/* 🦅 RIGHT SIDE: flexShrink: 0 locks the buttons in place so they NEVER get pushed off-screen */}
+                <div style={{ textAlign: 'right', display: 'flex', flexDirection: 'column', alignItems: 'flex-end', flexShrink: 0 }}>
+
+                  <p style={{ margin: 0, fontSize: '9px', color: '#888', marginBottom: '4px', fontFamily: 'monospace' }}>
+                    {finalDisplayAddr ? `${finalDisplayAddr.slice(0, 6)}...${finalDisplayAddr.slice(-4)}` : ''}
+                  </p>
+
+                    <div style={{ textAlign: 'right', display: 'flex', flexDirection: 'column', alignItems: 'flex-end', flexShrink: 0, gap: '4px' }}>
+                  
+                  {/* 🦅 THE SOVEREIGN PILL SWITCH (MOVED UP TO A VERTICAL STACK) */}
+                  {isHbarChain && (
+                    <div style={{
+                      display: 'inline-flex', flexDirection: 'row', background: '#050505',
+                      padding: '2px', borderRadius: '20px', border: '1px solid #1a1a1a', height: '18px', alignItems: 'center'
+                    }}>
+                      <button
+                        onClick={() => setHederaView('EVM')}
+                        style={{ background: hederaView === 'EVM' ? '#222' : 'transparent', color: hederaView === 'EVM' ? '#00d4ff' : '#555', border: 'none', fontSize: '8px', padding: '0 6px', height: '14px', borderRadius: '10px', cursor: 'pointer', fontWeight: 'bold', transition: 'all 0.2s ease', display: 'flex', alignItems: 'center', lineHeight: '1' }}
+                      >EVM</button>
+                      <button
+                        onClick={async () => {
+                          setHederaView('NATIVE');
+                          if (resolvedHbarId === 'Loading...' || !resolvedHbarId) {
+                            const id = await resolveHederaIdentity(userAddress);
+                            setResolvedHbarId(id || "No ID Found");
+                          }
+                        }}
+                        style={{ background: hederaView === 'NATIVE' ? '#222' : 'transparent', color: hederaView === 'NATIVE' ? '#00ffcc' : '#555', border: 'none', fontSize: '8px', padding: '0 6px', height: '14px', borderRadius: '10px', cursor: 'pointer', fontWeight: 'bold', transition: 'all 0.2s ease', display: 'flex', alignItems: 'center', lineHeight: '1' }}
+                      >HEDERA</button>
+                    </div>
+                  )}
+
+          
+                    <button
+                      onClick={() => handleCopy(finalDisplayAddr)}
+                      style={{
+                        borderColor: '#00e5ff',
+                        borderStyle: 'solid',
+                        borderWidth: '1px',
+                        color: '#00e5ff',
+                        background: 'transparent',
+                        cursor: finalDisplayAddr ? 'pointer' : 'not-allowed',
+                        fontSize: '10px',
+                        padding: '4px 8px',
+                        borderRadius: '4px'
+                      }}
+                    >
+                      COPY
+                    </button>
+
+                    <button
+                      onClick={() => {
+                        if (buttonText === 'SEND') {
+                          setSelectedAsset({ ...net, currentBalance: bal });
+                          setShowSendModal(true);
+                        } else if (buttonText === 'ACTIVATE') {
+                          setSelectedAsset({ ...net, activationAddress: finalDisplayAddr });
+                          setShowActivateModal(true);
+                        } else if (buttonText === 'TRUST') {
+                          handleExecuteTrustline(net);
+                        }
+                      }}
+                      disabled={isProcessingTrust === `${net.chain}_${(rowAsset === 'SGCN' || rowAsset === 'SGC' || rowAsset === 'SEAGULLCOIN') ? 'SeagullCoin' : 'SeagullCash'}`}
+                      style={{
+                        ...sendBtnStyle,
+                        background: isActive ? '#00ffcc' : (isProcessingTrust ? '#444' : '#00d4ff'),
+                        color: '#000',
+                        fontSize: buttonText === 'TRUST' ? '10px' : '11px',
+                        cursor: isProcessingTrust ? 'not-allowed' : 'pointer',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '5px'
+                      }}
+                    >
+                      {isProcessingTrust === `${net.chain}_${(rowAsset === 'SGCN' || rowAsset === 'SGC' || rowAsset === 'SEAGULLCOIN') ? 'SeagullCoin' : 'SeagullCash'}` ? (
+                        <>
+                          <span className="spinner"></span> PROCESSING...
+                        </>
+                      ) : (
+                        buttonText
+                      )}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            );
+          })}
         </div>
-      );
-    })}
-  </div>
-)}              
+      )}
 
-
-            {activeTab === 'TICKETS' && (
+      {activeTab === 'TICKETS' && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', maxHeight: '400px', overflowY: 'auto', paddingRight: '5px' }}>
           {activeTickets.filter(t => t.userId?.toLowerCase() === userAddress?.toLowerCase() || t.address?.toLowerCase() === userAddress?.toLowerCase()).length === 0 ? (
             <p style={{ color: '#444', fontSize: '11px', textAlign: 'center', padding: '60px' }}>NO RECENT ACTIVITY</p>
@@ -1028,12 +1432,27 @@ const feeData = await provider.getFeeData();
             <h3 style={{ color: '#00d4ff', margin: '0 0 15px 0' }}>🚀 Send {selectedAsset.name}</h3>
             <div style={boxStyle}>
               <p style={labelStyle}>AVAILABLE: {parseFloat(selectedAsset.currentBalance).toLocaleString()}</p>
+
+              {selectedAsset.chain === 'HBAR' && (
+                <div style={{ display: 'flex', gap: '5px', marginBottom: '10px' }}>
+                  <button
+                    onClick={() => { setIsNativeMode(false); setSendForm(prev => ({...prev, recipient: ''})); }}
+                    style={{ flex: 1, padding: '8px', fontSize: '10px', borderRadius: '8px', border: '1px solid #333', background: !isNativeMode ? '#00d4ff' : '#111', color: !isNativeMode ? '#000' : '#666', fontWeight: 'bold', cursor: 'pointer' }}
+                  >EVM (0x)</button>
+                  <button
+                    onClick={() => { setIsNativeMode(true); setSendForm(prev => ({...prev, recipient: ''})); }}
+                    style={{ flex: 1, padding: '8px', fontSize: '10px', borderRadius: '8px', border: '1px solid #333', background: isNativeMode ? '#00d4ff' : '#111', color: isNativeMode ? '#000' : '#666', fontWeight: 'bold', cursor: 'pointer' }}
+                  >NATIVE (0.0.x)</button>
+                </div>
+              )}
+
               <input
                 style={{...inputStyle, marginTop: '10px'}}
-                placeholder="Recipient Address"
+                placeholder={isNativeMode ? "Native ID (0.0.xxxxxx)" : "Recipient Address (0x...)"}
                 value={sendForm.recipient}
                 onChange={(e) => setSendForm({...sendForm, recipient: e.target.value})}
               />
+
               <input
                 style={{...inputStyle, marginTop: '10px'}}
                 type="number"
@@ -1042,7 +1461,6 @@ const feeData = await provider.getFeeData();
                 onChange={(e) => setSendForm({...sendForm, amount: e.target.value})}
               />
 
-              {/* 🦅 SMART MEMO / TAG LOGIC (Excludes Flare/FLR) */}
               {selectedAsset.chain !== 'FLARE' && selectedAsset.chain !== 'FLR' && (
                 <div style={{ display: 'flex', flexDirection: 'column', width: '100%', marginTop: '10px' }}>
                   <label style={labelStyle}>
@@ -1061,47 +1479,72 @@ const feeData = await provider.getFeeData();
                 </div>
               )}
             </div>
+
             <div style={{ display: 'flex', gap: '10px', marginTop: '15px' }}>
-              <button onClick={() => setShowSendModal(false)} style={{...btnStyle, background: '#222', flex: 1}}>CANCEL</button>
-              <button onClick={handleExecuteSend} style={{...btnStyle, flex: 2}}>CONFIRM SEND</button>
+              <button
+                onClick={() => setShowSendModal(false)}
+                style={{...btnStyle, background: '#222', flex: 1}}
+                disabled={isSending} 
+              >
+                CANCEL
+              </button>
+
+              <button
+                onClick={handleExecuteSend}
+                disabled={isSending}
+                style={{
+                  ...btnStyle,
+                  flex: 2,
+                  filter: isSending ? 'grayscale(1) opacity(0.5)' : 'none',
+                  cursor: isSending ? 'not-allowed' : 'pointer',
+                  transition: 'all 0.3s ease'
+                }}
+              >
+                {isSending ? (
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px' }}>
+                    <div className="spinner"></div>
+                    <span>SIGNING...</span>
+                  </div>
+                ) : (
+                  "CONFIRM SEND"
+                )}
+              </button>
             </div>
           </div>
         </div>
       )}
 
-{/* 🦅 THEMED NATIVE ACTIVATION MODAL */}
-{showActivateModal && selectedAsset && (
-  <div style={overlayStyle} onClick={() => setShowActivateModal(false)}>
-    <div style={{ ...modalStyle, border: '1px solid #ffcc00' }} onClick={e => e.stopPropagation()}>
-      <div style={{ fontSize: '30px', marginBottom: '10px' }}>⚡</div>
-      <h3 style={{ color: '#ffcc00', margin: '0 0 10px 0' }}>{selectedAsset.chain} ACTIVATION</h3>
+      {/* 🦅 THEMED NATIVE ACTIVATION MODAL */}
+      {showActivateModal && selectedAsset && (
+        <div style={overlayStyle} onClick={() => setShowActivateModal(false)}>
+          <div style={{ ...modalStyle, border: '1px solid #ffcc00' }} onClick={e => e.stopPropagation()}>
+            <div style={{ fontSize: '30px', marginBottom: '10px' }}>⚡</div>
+            <h3 style={{ color: '#ffcc00', margin: '0 0 10px 0' }}>{selectedAsset.chain} ACTIVATION</h3>
 
-      <p style={{ color: '#fff', fontSize: '13px', lineHeight: '1.6', marginBottom: '20px' }}>
-        To initialize this native account layer, please deposit at least
-        <strong style={{ color: '#ffcc00' }}> {selectedAsset.chain === 'XRPL' ? '1 XRP' : '1 XLM'}</strong>.
-      </p>
+            <p style={{ color: '#fff', fontSize: '13px', lineHeight: '1.6', marginBottom: '20px' }}>
+              To initialize this native account layer, please deposit at least
+              <strong style={{ color: '#ffcc00' }}> {selectedAsset.chain === 'XRPL' ? '1 XRP' : '1 XLM'}</strong>.
+            </p>
 
-      <div style={{ background: '#000', padding: '12px', borderRadius: '10px', border: '1px solid #222', marginBottom: '20px' }}>
-        <p style={{ fontSize: '9px', color: '#444', textTransform: 'uppercase', marginBottom: '5px' }}>Your Sovereign Address</p>
-        {/* 🦅 FIXED: Now shows the correct G... or r... address passed from the row */}
-        <p style={{ fontSize: '11px', color: '#00d4ff', wordBreak: 'break-all', fontFamily: 'monospace' }}>
-          {selectedAsset.activationAddress}
-        </p>
-      </div>
+            <div style={{ background: '#000', padding: '12px', borderRadius: '10px', border: '1px solid #222', marginBottom: '20px' }}>
+              <p style={{ fontSize: '9px', color: '#444', textTransform: 'uppercase', marginBottom: '5px' }}>Your Sovereign Address</p>
+              <p style={{ fontSize: '11px', color: '#00d4ff', wordBreak: 'break-all', fontFamily: 'monospace' }}>
+                {selectedAsset.activationAddress}
+              </p>
+            </div>
 
-      <div style={{ display: 'flex', gap: '10px' }}>
-        <button onClick={() => setShowActivateModal(false)} style={{ ...btnStyle, background: '#222', flex: 1, color: '#fff' }}>CANCEL</button>
-        <button
-          onClick={() => { handleCopy(selectedAsset.activationAddress); setShowActivateModal(false); }}
-          style={{ ...btnStyle, background: '#ffcc00', flex: 1, color: '#000' }}
-        >
-          COPY ADDRESS
-        </button>
-      </div>
-    </div>
-  </div>
-)}
-
+            <div style={{ display: 'flex', gap: '10px' }}>
+              <button onClick={() => setShowActivateModal(false)} style={{ ...btnStyle, background: '#222', flex: 1, color: '#fff' }}>CANCEL</button>
+              <button
+                onClick={() => { handleCopy(selectedAsset.activationAddress); setShowActivateModal(false); }}
+                style={{ ...btnStyle, background: '#ffcc00', flex: 1, color: '#000' }}
+              >
+                COPY ADDRESS
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* 🏛️ ISO 20022 TERMINAL MODAL */}
       {showIsoPortal && (
@@ -1115,7 +1558,8 @@ const feeData = await provider.getFeeData();
           </div>
 
           {isoMessages.length === 0 ? (
-            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '10px' }}>                            <span style={{ fontSize: '30px', opacity: 0.2 }}>🏛️</span>
+            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '10px' }}>
+              <span style={{ fontSize: '30px', opacity: 0.2 }}>🏛️</span>
               <p style={{ color: '#333', fontSize: '11px', fontWeight: 'bold' }}>NO ARCHIVED ISO RECORDS FOUND</p>
             </div>
           ) : (
@@ -1139,10 +1583,9 @@ const feeData = await provider.getFeeData();
                         <span style={{ fontSize: '10px', color: '#444', marginLeft: '5px' }}>{msg.currency || 'SGC'}</span>
                       </div>
                       <span style={{ fontSize: '9px', color: '#00d4ff', fontWeight: 'bold' }}>{chainKey}</span>
-                    </div>                                                                                                                                                    <div style={{ display: 'flex', gap: '8px' }}>                                                                                                               <button
-                        onClick={() => handleCopy(msg.rawXml || `<Document><UETR>${txHash}</UETR></Document>`)}
-                        style={{ flex: 1, padding: '10px', background: 'transparent', border: '1px solid #222', color: '#00d4ff', fontSize: '9px', fontWeight: 'bold', borderRadius: '8px', cursor: 'pointer' }}
-      >
+                    </div>
+                    <div style={{ display: 'flex', gap: '8px' }}>
+                      <button  onClick={() => handleCopy(msg.rawXml || `<Document><UETR>${txHash}</UETR></Document>`)} style={{ flex: 1, padding: '10px', background: 'transparent', border: '1px solid #222', color: '#00d4ff', fontSize: '9px', fontWeight: 'bold', borderRadius: '8px', cursor: 'pointer' }} >
                         COPY XML
                       </button>
                       <button
@@ -1162,7 +1605,8 @@ const feeData = await provider.getFeeData();
                         style={{ flex: 1, padding: '10px', background: '#111', border: 'none', color: '#666', fontSize: '9px', fontWeight: 'bold', borderRadius: '8px', cursor: 'pointer' }}
                       >
                         EXPLORER ↗
-                      </button>                                                                                                                                               </div>
+                      </button>
+                    </div>
                   </div>
                 );
               })}
@@ -1173,29 +1617,89 @@ const feeData = await provider.getFeeData();
           </div>
         </div>
       )}
-{/* 🦅 GLOBAL SUCCESS MODAL */}                                                                       {showSuccess && (
-  <div style={overlayStyle} onClick={() => setShowSuccess(false)}>
-    <div style={{ ...modalStyle, borderColor: '#00ffcc' }} onClick={(e) => e.stopPropagation()}>
-      <div style={{ fontSize: '40px', marginBottom: '10px' }}>✅</div>
-      <h3 style={{ color: '#00ffcc', margin: '0 0 15px 0' }}>SUCCESS</h3>
-      <p style={{ color: '#fff', fontSize: '14px', marginBottom: '20px' }}>{successMsg}</p>                                                                     <button
-        onClick={() => setShowSuccess(false)}
-        style={{ ...btnStyle, background: '#00ffcc', color: '#000', width: '100%' }}
-      >                                                                                                             CONTINUE
-      </button>
-    </div>
-  </div>
-)}
 
+      {/* 🦅 GLOBAL SUCCESS MODAL */}
+      {showSuccess && (
+        <div style={overlayStyle} onClick={() => setShowSuccess(false)}>
+          <div style={{ ...modalStyle, borderColor: '#00ffcc' }} onClick={(e) => e.stopPropagation()}>
+            <div style={{ fontSize: '40px', marginBottom: '10px' }}>✅</div>
+            <h3 style={{ color: '#00ffcc', margin: '0 0 15px 0' }}>SUCCESS</h3>
+            <p style={{ color: '#fff', fontSize: '14px', marginBottom: '20px' }}>{successMsg}</p>
+            <button
+              onClick={() => setShowSuccess(false)}
+              style={{ ...btnStyle, background: '#00ffcc', color: '#000', width: '100%' }}
+            >
+              CONTINUE
+            </button>
+          </div>
+        </div>
+      )}
 
-      {/* 🦅 SUPPORT BUBBLE */}
-      <div style={{ position: 'fixed', bottom: '25px', right: '25px', zIndex: 9999 }}>                              <button onClick={() => setShowSupport(!showSupport)} style={supportBubbleStyle}>
-          <span style={{ fontSize: '28px', lineHeight: '1' }}>🪽</span>
-          <span style={{ fontSize: '9px', fontWeight: '900', color: '#000', marginTop: '2px' }}>SUPPORT</span>
+      {/* 🦅 FIX: FLOATING CHAT ELEMENT ESCAPES TAB CONDITIONALS */}
+      {showSupport && (                                                                                            
+        <div style={{
+          position: 'fixed',
+          bottom: '80px',
+          right: '15px',
+          width: '280px',
+          background: '#0a0a0a',
+          border: '1px solid #1a1a1a',
+          borderRadius: '16px',
+          overflow: 'hidden',
+          boxShadow: '0 10px 30px rgba(0,0,0,0.8)',
+          zIndex: 10009
+        }}>
+          <div style={{ background: '#00ffcc', padding: '10px 12px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', color: '#000' }}>
+            <span style={{ fontSize: '11px', fontWeight: '900' }}>🪽 CORE SUPPORT</span>
+            <button onClick={() => setShowSupport(false)} style={{ background: 'transparent', border: 'none', color: '#000', cursor: 'pointer', fontWeight: 'bold' }}>✕</button>
+          </div>
+          <div style={{ padding: '12px', display: 'flex', flexDirection: 'column', gap: '8px', background: '#050505' }}>
+
+            <div style={{ height: '140px', overflowY: 'auto', background: '#000', borderRadius: '8px', padding: '8px', border: '1px solid #111' }}>
+              {Array.isArray(messages) && messages.map((m, i) => {
+                let msgColor = '#888'; 
+                if (m?.role === 'user') msgColor = '#00d4ff';
+                if (m?.role === 'admin') msgColor = '#00ffcc'; 
+
+                return (
+                  <div key={i} style={{ fontSize: '10px', color: msgColor, marginBottom: '6px' }}>
+                    <strong>{String(m?.role || 'SYSTEM').toUpperCase()}:</strong> {m?.text || ''}
+                  </div>
+                );
+              })}
+            </div>
+
+            <div style={{ display: 'flex', gap: '6px' }}>
+              <input
+                value={supportMessage || ''}
+                onChange={(e) => setSupportMessage(e.target.value)}
+                placeholder="Enter network error hash..."
+                style={{ padding: '6px', background: '#000', color: '#fff', border: '1px solid #111', borderRadius: '6px', fontSize: '11px', flex: 1 }}
+              />
+              <button
+                onClick={() => {
+                  handleCreateTicket(supportMessage);
+                  setSupportMessage('');
+                }}
+                style={{ background: '#00ffcc', color: '#000', border: 'none', borderRadius: '6px', padding: '0 12px', fontSize: '11px', fontWeight: 'bold' }}
+              >
+                SEND
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 🦅 SHRUKEN CORE BUTTON FOR ZERO LAYOUT OVERLAP */}
+      <div style={{ position: 'fixed', bottom: '15px', right: '15px', zIndex: 10010 }}>
+        <button onClick={() => setShowSupport(!showSupport)} style={{ width: '56px', height: '56px', background: '#00ffcc', borderRadius: '50%', border: 'none', boxShadow: '0 0 20px rgba(0, 255, 204, 0.4)', cursor: 'pointer', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center' }}>
+          <span style={{ fontSize: '20px' }}>🪽</span>
+          <span style={{ fontSize: '8px', fontWeight: '900', color: '#000' }}>SUPPORT</span>
         </button>
       </div>
 
-      {/* 🦅 COPY TOAST */}                                                                                                                                     {showCopyToast && (
+      {/* 🦅 COPY TOAST */}
+      {showCopyToast && (
         <div style={{ position: 'fixed', bottom: '120px', left: '50%', transform: 'translateX(-50%)', background: '#00d4ff', color: '#000', padding: '8px 20px', borderRadius: '20px', fontSize: '11px', fontWeight: 'bold', zIndex: 10002 }}>
           ✅ COPIED
         </div>
@@ -1236,6 +1740,7 @@ const spinnerStyle = `
     animation: spin 0.8s linear infinite;
   }
 `;
+
 const TicketRow = ({ t, idx, isChat, color, status, userAddress, ADMIN_WALLET, handleResolveTicket, setReplyingTo, setServerMemo, setServerDepositAddr, setShowModal, deckRow, copyBtnStyle }) => {
   const [timeLeft, setTimeLeft] = useState("");
   useEffect(() => {
@@ -1279,4 +1784,3 @@ const TicketRow = ({ t, idx, isChat, color, status, userAddress, ADMIN_WALLET, h
 };
 
 export default BridgeWidget;
-

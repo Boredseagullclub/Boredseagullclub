@@ -36,6 +36,7 @@ const bip39 = require('bip39');
 const { Wallet } = require('xrpl');
 const { Keypair } = require('stellar-sdk');
 const { derivePath } = require('ed25519-hd-key');
+const { Client, PrivateKey, AccountId, TransferTransaction, Hbar, TokenId } = require('@hashgraph/sdk');
 const { RekognitionClient, DetectFacesCommand } = require("@aws-sdk/client-rekognition");
 const rekognition = new RekognitionClient({ region: "us-east-1" });
 const slotRoutes = require('../routes/slotRoutes');
@@ -211,27 +212,87 @@ app.post('/admin/sweep', adminAuth, async (req, res) => {
   }
 });
 
+// 🦅 MASTER TREASURY ROUTING DICTIONARY
+const TREASURY_DEPOSITS = {
+  XRPL: { address: 'rVKvTekTiqygS9qB27MPmsoDLyuD8PksF' },
+  XLM: { address: 'GD2VMYH62JD2ZGTMMWFCU5YNMASC5NWZ5FM5WN2GWLYAACYXP6BKG44I' },
+  HBAR: { address: '0.0.10419620' },
+  XDC: { address: 'xdc3B51F488f729e5Cfa566990Fd7f069F364b6984D' },
+  FLARE: { address: '0x6FeD6C7501Ac980548DAE096F022Ae3758E6DecC' }
+};
+
 app.post('/api/bridge/intent', async (req, res) => {
     const { amount, symbol, fromChain, toChain, destinationAddress, userId } = req.body;
 
     try {
         // 🦅 GENERATE SOVEREIGN TICKET
-        // This generates a unique memo for the user to use during deposit
         const uniqueMemo = Math.floor(100000 + Math.random() * 900000).toString();
 
-        // Save the intent so the listeners know what to do when funds arrive
-        // (Assuming you have a BridgeIntent model)
         console.log(`🎫 Bridge Ticket Generated: ${uniqueMemo} for ${userId}`);
+
+        const depositAddr = TREASURY_DEPOSITS[fromChain?.toUpperCase()]?.address;
+        
+        if (!depositAddr) {
+            throw new Error(`Unsupported bridge origin chain: ${fromChain}`);
+        }
+
+        // 🦅 ACTUALLY SAVE THE TICKET TO THE DATABASE
+        const mongoose = require('mongoose');
+        
+        // IMPORTANT: If your GET /api/bridge/tickets route reads from a different collection
+        // (like 'bridge_intents' or 'deposits'), change 'tickets' below to match it.
+        await mongoose.connection.db.collection('tickets').insertOne({
+            userId: userId?.toLowerCase(),
+            address: userId?.toLowerCase(), // Fills both fields to guarantee the UI filter catches it
+            amount: amount,
+            symbol: symbol,
+            fromChain: fromChain,
+            toChain: toChain,
+            destinationAddress: destinationAddress,
+            memo: uniqueMemo,
+            depositAddress: depositAddr,
+            status: 'PENDING',
+            createdAt: new Date(),
+            updatedAt: new Date()
+        });
 
         res.json({
             success: true,
             memo: uniqueMemo,
-            depositAddress: TREASURY[fromChain]?.address
+            depositAddress: depositAddr
         });
     } catch (err) {
+        console.error("Bridge Intent Error:", err.message);
         res.status(500).json({ success: false, error: err.message });
     }
 });
+
+// 🦅 DYNAMIC USER TICKET HEARTBEAT ROUTE
+app.get('/api/bridge/tickets/:userId', async (req, res) => {
+    try {
+        const userId = req.params.userId?.toLowerCase();
+        if (!userId) return res.json({ success: true, tickets: [] });
+
+        const mongoose = require('mongoose');
+        
+        // This queries the exact same 'tickets' collection we are saving to
+        const userTickets = await mongoose.connection.db.collection('tickets').find({
+            $or: [
+                { userId: userId },
+                { address: userId }
+            ]
+        }).toArray();
+
+        res.json({
+            success: true,
+            tickets: userTickets
+        });
+    } catch (err) {
+        console.error("Heartbeat Ticket Fetch Error:", err.message);
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
 
 // 🦅 THE MACHINE DISCOVERY BEACON: Public Model Context Protocol Endpoint
 app.get('/.well-known/mcp.json', (req, res) => {
@@ -1550,6 +1611,7 @@ app.post('/api/wallet/broadcast', async (req, res) => {
             // 🦅 Modern Hedera SDK explicit key initialization (Silences the warning!)
             const operatorKey = PrivateKey.fromStringECDSA(cleanKey);
 
+
             const cleanHbarId = process.env.HBAR_OPERATOR_ID ? String(process.env.HBAR_OPERATOR_ID).trim() : "0.0.10419620";
 
             const parsedOperatorId = cleanHbarId.startsWith("0x")
@@ -1573,13 +1635,14 @@ app.post('/api/wallet/broadcast', async (req, res) => {
                     ? TokenId.fromSolidityAddress(targetTokenStr)
                     : TokenId.fromString(targetTokenStr);
 
-                // 🦅 Convert the text string to a number and shift 6 decimals over for SeagullCash
+                                // 🦅 Convert the text string to a number and shift 6 decimals over for SeagullCash
                 const rawAmount = Math.round(parseFloat(incomingAmount) * 1000000);
 
                 transaction
                     .addTokenTransfer(tokenId, parsedOperatorId, -rawAmount)
-                    .addTokenTransfer(String(incomingRecipient).trim(), rawAmount)
+                    .addTokenTransfer(tokenId, String(incomingRecipient).trim(), rawAmount)
                     .setTransactionMemo(incomingMemo || "");
+
             }
 
             const response = await transaction.execute(client);

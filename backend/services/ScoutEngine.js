@@ -50,9 +50,9 @@ async function executeMultiChainScout(address) {
 
                     // Live XRP Drops
                     const accountInfo = await client.request({ command: "account_info", account: cleanAddress, ledger_index: "validated" });
-                    const xrpBalance = xrpl.dropsToXrp(accountInfo.result.account_data.Balance);                                      
-                    scoutReport.push({                                                     
-                        name: 'XRP', symbol: 'XRP', ticker: 'XRP', chain: 'XRPL',                                                                             
+                    const xrpBalance = xrpl.dropsToXrp(accountInfo.result.account_data.Balance);
+                    scoutReport.push({
+                        name: 'XRP', symbol: 'XRP', ticker: 'XRP', chain: 'XRPL',                                                                         
                         balance: xrpBalance, issuer: 'Native', logo: LOGOS.XRP
                     });
 
@@ -67,7 +67,7 @@ async function executeMultiChainScout(address) {
                                 assetName = 'SeagullCoin'; assetTicker = 'SGC'; assetLogo = LOGOS.SGC;
                             } else if (line.account === 'rNHeGnj4kqGSVyFzDcoyi3gsp1bdPuGeNK' || line.currency === 'SGCSH' || line.currency === 'SGH' || line.currency === 'SEAGULLCASH') {
                                 assetName = 'SeagullCash'; assetTicker = 'SGCSH'; assetLogo = LOGOS.SGCSH;
-                            }                                      
+                            }
                             if (assetName) {
                                 let rawBal = String(line.balance);
                                 if (rawBal.includes('e-') || rawBal.includes('E-')) {
@@ -92,7 +92,7 @@ async function executeMultiChainScout(address) {
                                     const rawAmount = typeof tx.Amount === 'string' ? xrpl.dropsToXrp(tx.Amount) : tx.Amount.value;
                                     let tokenTicker = typeof tx.Amount === 'string' ? 'XRP' : tx.Amount.currency;
                                     if (tokenTicker === 'SGH' || tokenTicker === 'SEAGULLCASH') tokenTicker = 'SGCSH';
-                                    if (tokenTicker === 'SEAGULLCOIN') tokenTicker = 'SGC';                                           
+                                    if (tokenTicker === 'SEAGULLCOIN') tokenTicker = 'SGC';
                                     discoveredTransactions.push({
                                         hash: tx.hash, uetr: 'N/A (NATIVE BASE LAYER)',
                                         type: isSend ? 'SEND' : 'RECEIVE',
@@ -105,13 +105,13 @@ async function executeMultiChainScout(address) {
                                 }
                             });
                         }
-                    } catch (txErr) { console.warn(`⚠️ Live XRPL ledger walk failed: ${txErr.message}`); }                             
+                    } catch (txErr) { console.warn(`⚠️ Live XRPL ledger walk failed: ${txErr.message}`); }
                     await client.disconnect();
                     break;
                 } catch (err) { console.warn(`⚠️ Failover bypassing XRPL gate: ${nodeUrl}`); }
             }
         })());
-    }                                                              
+    }
 
     // --- CASE B: STELLAR IDENTS ---
     if (cleanAddress.startsWith('G') && cleanAddress.length === 56) {
@@ -121,7 +121,7 @@ async function executeMultiChainScout(address) {
                 if (response.status === 200) {
                     const accountData = await response.json();
                     for (const bal of accountData.balances) {
-                        const codeNormalized = String(bal.asset_code || '').toUpperCase();                                            
+                        const codeNormalized = String(bal.asset_code || '').toUpperCase();
                         if (bal.asset_type === 'native') {
                             scoutReport.push({ name: 'XLM', symbol: 'XLM', ticker: 'XLM', chain: 'STELLAR', balance: parseFloat(bal.balance).toFixed(4), issuer: 'Native', logo: LOGOS.XLM });
                         } else if (codeNormalized === 'SEAGULLCASH' || codeNormalized === 'SGCSH' || bal.asset_issuer === 'GBC2VA3YMAIVB3A77VNRPKMQI3RAPD') {
@@ -133,15 +133,23 @@ async function executeMultiChainScout(address) {
 
                     // Gather payment history from Horizon
                     try {
-                        const historyRes = await fetch(`https://horizon.stellar.org/accounts/${cleanAddress}/payments?limit=20&order=desc`);
+                        const historyRes = await fetch(`https://horizon.stellar.org/accounts/${cleanAddress}/payments?limit=40&order=desc`);
                         if (historyRes.status === 200) {
                             const historyData = await historyRes.json();
                             historyData._embedded.records.forEach(op => {
                                 if (op.type === 'payment') {
+                                    // 🦅 1. FILTER OUT NOISE: Skip microscopic/dust transactions that round to 0
+                                    if (parseFloat(op.amount) < 0.01) return;
+
                                     const isSend = op.from === cleanAddress;
                                     let tokenTicker = op.asset_type === 'native' ? 'XLM' : op.asset_code;
                                     if (tokenTicker === 'SEAGULLCASH') tokenTicker = 'SGCSH';
                                     if (tokenTicker === 'SEAGULLCOIN') tokenTicker = 'SGC';
+
+                                    // 🦅 2. STRICT CURRENCY CHECK: Only load transactions for specific assets
+                                    const allowedCurrencies = ['XLM', 'SGC', 'SGCSH'];
+                                    if (!allowedCurrencies.includes(tokenTicker)) return;
+
                                     discoveredTransactions.push({
                                         hash: op.transaction_hash, uetr: 'N/A (NATIVE BASE LAYER)',
                                         type: isSend ? 'SEND' : 'RECEIVE',
@@ -155,7 +163,7 @@ async function executeMultiChainScout(address) {
                             });
                         }
                     } catch (historyErr) { console.warn(`⚠️ Horizon operations lookups failed: ${historyErr.message}`); }
-                }                                                              
+                }
             } catch (e) { console.warn(`⚠️ Stellar live stream bypassed: ${e.message}`); }
         })());
     }
@@ -173,7 +181,7 @@ async function executeMultiChainScout(address) {
                     if (response.status === 200) {
                         const hbarData = await response.json();
                         const nativeHbar = (parseInt(hbarData.balance.balance) / 100000000).toFixed(4);
-                                                                                           
+
                         scoutReport.push({ name: 'Native HBAR', symbol: 'HBAR', ticker: 'HBAR', chain: 'HEDERA', balance: nativeHbar, issuer: 'Native', logo: LOGOS.HBAR });
 
                         if (hbarData.balance.tokens && Array.isArray(hbarData.balance.tokens)) {
@@ -197,9 +205,9 @@ async function executeMultiChainScout(address) {
                 'FLARE': { id: 14, endpoints: ['https://flare.public-rpc.com', 'https://rpc.ankr.com/flare'], nativeTicker: 'FLR', contracts: { SGC: '0x495daFA49eD19f3bFC3ddeb7e048f20ff149778f' } },
                 'XDC': { id: 50, endpoints: ['https://rpc.xdc.org', 'https://50.rpc.thirdweb.com/'], nativeTicker: 'XDC', contracts: { SGC: '0xd38109f587bd0326cad60a18cf3c1ecd546809a6' } },
                 'HEDERA': { id: 295, endpoints: ['https://mainnet.hashgraph.io/api/v1/jsonrpc'], nativeTicker: 'HBAR', contracts: { SGCSH: '0x00000000000000000000000000000000002f8a24' } }
-            };                                                     
+            };
             const erc20Abi = ["function balanceOf(address owner) view returns (uint256)"];
-                                                                               
+
             await Promise.all(Object.entries(EVM_NETWORKS).map(async ([chain, nConfig]) => {
                 let settled = false;
                 for (const url of nConfig.endpoints) {
@@ -210,10 +218,10 @@ async function executeMultiChainScout(address) {
                             provider.getBalance(evmSearchAddress),
                             new Promise((_, r) => setTimeout(() => r(new Error('Timeout')), 2200))
                         ]);
-                                                                                           
+
                         const ethBal = chain === 'HEDERA' ? (Number(bal) / 100000000).toFixed(4) : ethers.formatEther(bal);
                         settled = true;
-                                                                                           
+
                         if (parseFloat(ethBal) > 0) {
                             scoutReport.push({ name: `Native ${chain}`, symbol: nConfig.nativeTicker, ticker: nConfig.nativeTicker, chain: chain, balance: ethBal, issuer: 'Native', logo: LOGOS[nConfig.nativeTicker] });
                         }
@@ -240,7 +248,8 @@ async function executeMultiChainScout(address) {
     // 2. ENGINE PHASE B: HIGH-INTELLIGENCE ISO INTERBANK MESSAGE INGESTION
     // =============================================================
     try {
-        const rawIsoRecords = await mongoose.connection.db.collection('DB_ISO_messages')
+        // 🦅 FIXED: Now strictly pointing to the live 'iso_messages' bridge output!
+        const rawIsoRecords = await mongoose.connection.db.collection('iso_messages')
             .find({
                 $or: [
                     { sender: cleanAddress }, { receiver: cleanAddress },
@@ -261,14 +270,14 @@ async function executeMultiChainScout(address) {
                 String(doc.sender).toLowerCase() === checkEvm ||
                 String(doc.debtorAccount).toLowerCase() === checkEvm
             );
-                                                                               
+
             let cleanCurrency = String(doc.currency || 'SGC').toUpperCase();
             if (cleanCurrency.includes('CASH') || cleanCurrency.includes('SGH')) cleanCurrency = 'SGCSH';
             if (cleanCurrency.includes('COIN')) cleanCurrency = 'SGC';
 
             let determinedIntent = isSend ? 'TRANSFER OUT' : 'TRANSFER IN';
             const memoString = String(doc.remittanceInfo || doc.memo || '').toUpperCase();
-            const typeString = String(doc.type || '').toUpperCase();                                                                  
+            const typeString = String(doc.type || '').toUpperCase();
             if (memoString.includes('SWAP') || typeString.includes('SWAP')) {
                 determinedIntent = isSend ? 'SWAP OUT' : 'SWAP IN';
             }
@@ -307,7 +316,7 @@ async function executeMultiChainScout(address) {
             if (!discoveredTransactions.some(h => h.hash.toLowerCase() === dep.txHash.toLowerCase())) {
                 let cleanToken = String(dep.token || 'SGC').toUpperCase();
                 if (cleanToken.includes('CASH') || cleanToken === 'SGH') cleanToken = 'SGCSH';
-                                                                                   
+
                 discoveredTransactions.push({
                     hash: dep.txHash, uetr: 'N/A (NATIVE DEPOSIT ENTRY)',
                     type: 'RECEIVE',
@@ -327,7 +336,7 @@ async function executeMultiChainScout(address) {
     // 4. ENGINE PHASE D: REAL ECOSYSTEM RICHLIST (STATE-BASED HOLDINGS)
     // =============================================================
     let richlistMetrics = { sgcTopBalances: [], sgcshTopBalances: [] };
-    try {                                                                  
+    try {
         // 🏛️ TRACK 1: SEAGULLCOIN (SGC) MULTI-CHAIN UNIFICATION (Top 100)
         const xrplSgc = await getTopBalances('XRPL', 'SGC', 100);
         const xdcSgc = await getTopBalances('XDC', 'SGC', 100);
@@ -340,7 +349,7 @@ async function executeMultiChainScout(address) {
         ];
 
         masterSgcPool.sort((a, b) => b.balance - a.balance);
-        
+
         richlistMetrics.sgcTopBalances = masterSgcPool.slice(0, 300).map(u => ({
             wallet: u.wallet || 'Internal Account',
             balance: String(u.balance || "0.00"),
@@ -348,18 +357,18 @@ async function executeMultiChainScout(address) {
         }));
 
         // 🏛️ TRACK 2: SEAGULLCASH (SGCSH) MULTI-CHAIN UNIFICATION (Top 100)
-        const xrplCash = await getTopBalances('XRPL', 'SGCSH', 100);        
-        const hederaCash = await getTopBalances('HEDERA', 'SGCSH', 100);                                                                       
-        const stellarCash = await getTopBalances('STELLAR', 'SGCSH', 100);                                                             
-        
+        const xrplCash = await getTopBalances('XRPL', 'SGCSH', 100);
+        const hederaCash = await getTopBalances('HEDERA', 'SGCSH', 100);
+        const stellarCash = await getTopBalances('STELLAR', 'SGCSH', 100);
+
         let masterCashPool = [
             ...xrplCash.map(u => ({ wallet: u.walletAddress, balance: parseFloat(u.balance || 0), chain: 'XRPL' })),
             ...hederaCash.map(u => ({ wallet: u.walletAddress, balance: parseFloat(u.balance || 0), chain: 'HEDERA' })),
-            ...stellarCash.map(u => ({ wallet: u.walletAddress, balance: parseFloat(u.balance || 0), chain: 'STELLAR' }))                                      
+            ...stellarCash.map(u => ({ wallet: u.walletAddress, balance: parseFloat(u.balance || 0), chain: 'STELLAR' }))                                 
         ];
 
-        masterCashPool.sort((a, b) => b.balance - a.balance);      
-        
+        masterCashPool.sort((a, b) => b.balance - a.balance);
+
         richlistMetrics.sgcshTopBalances = masterCashPool.slice(0, 300).map(u => ({
             wallet: u.wallet || 'Internal Account',
             balance: String(u.balance || "0.00"),
@@ -377,16 +386,16 @@ async function executeMultiChainScout(address) {
         if (asset.chain) {
             asset.history = discoveredTransactions
                 .filter(tx =>
-                    tx.chain &&                                                        
-                    tx.chain.toUpperCase() === asset.chain.toUpperCase() &&                                                                               
+                    tx.chain &&
+                    tx.chain.toUpperCase() === asset.chain.toUpperCase() &&
                     tx.currency &&
                     tx.currency.toUpperCase() === asset.ticker.toUpperCase()
-                )                                                                  
+                )
                 .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
         } else {
             asset.history = [];
         }
-    });                                                            
+    });
     return {
         identityReport: scoutReport,
         globalMetrics: richlistMetrics
@@ -394,3 +403,4 @@ async function executeMultiChainScout(address) {
 }
 
 module.exports = { executeMultiChainScout };
+
