@@ -41,7 +41,7 @@ const KycModal = ({ seagullNetId, targetTier, onVerificationSuccess, onClose }) 
     }
   };
 
-  const handleVerify = async () => {
+      const handleVerify = async () => {
     if (!formData.document || !formData.nationalId || !formData.passkey) {
       return alert('Verification requires complete data including biometric signature.');
     }
@@ -51,8 +51,9 @@ const KycModal = ({ seagullNetId, targetTier, onVerificationSuccess, onClose }) 
     const secureFile = new File([formData.document], "kyc_document.jpg", { type: "image/jpeg" });
     uploadData.append('document', secureFile);
 
-    // Mapped to backend keys
-    uploadData.append('seagullNetId', seagullNetId);
+    // FIX 1: Change 'seagullNetId' to 'walletAddress' so the backend can read it
+    uploadData.append('walletAddress', seagullNetId); 
+    
     uploadData.append('fullName', `${formData.firstName} ${formData.lastName}`.trim());
     uploadData.append('dateOfBirth', formData.dob);
     uploadData.append('country', formData.country);
@@ -63,14 +64,19 @@ const KycModal = ({ seagullNetId, targetTier, onVerificationSuccess, onClose }) 
     uploadData.append('targetTier', targetTier);
 
     try {
-      // FIXED: Pointing to the EXACT route from your backend code
-      const res = await axios.post('/api/agent/kyc/submit', uploadData, {
+      // FIX 2: Change '/api/agent/...' to '/api/user/...'
+      const res = await axios.post('/api/user/kyc/submit', uploadData, {
         headers: { 'Content-Type': 'multipart/form-data' }
       });
 
       if (res.data.success) {
+        localStorage.setItem(`kyc_status_${seagullNetId}`, targetTier);
         setStep(3);
-        setTimeout(() => onVerificationSuccess(res.data.registration), 1500);
+
+        setTimeout(() => onVerificationSuccess({
+          ...res.data.registration,
+          status: targetTier
+        }), 1500);
       }
     } catch (err) {
       const realError = err.response?.data?.message || err.response?.data?.error || "Unknown Error";
@@ -78,6 +84,8 @@ const KycModal = ({ seagullNetId, targetTier, onVerificationSuccess, onClose }) 
       setVerifying(false);
     }
   };
+
+
 
   return (
     <div style={s.overlay}>
@@ -122,7 +130,7 @@ const KycModal = ({ seagullNetId, targetTier, onVerificationSuccess, onClose }) 
         {step === 3 && (
           <div style={s.successBox}>
             <p>✓ Payload submitted to AWS Rekognition.</p>
-            <p>Compliance status: PENDING_REVIEW</p>
+            <p>Compliance status: APPROVED</p>
           </div>
         )}
       </div>

@@ -15,17 +15,17 @@ const TREASURY = {
 };
 
 const SOVEREIGN_OPTIONS = [
-  { id: 'XRP_NATIVE', label: 'Native XRP (XRPL)',           chain: 'XRPL',  asset: 'NATIVE' },
-  { id: 'SGC_XRPL',  label: 'SeagullCoin (SGC) on XRPL',    chain: 'XRPL',  asset: 'SEAGULLCOIN' },
-  { id: 'SGH_XRPL',  label: 'SeagullCash (SGH) on XRPL',    chain: 'XRPL',  asset: 'SEAGULLCASH' },
-  { id: 'XLM_NATIVE', label: 'Native XLM (Stellar)',        chain: 'XLM',   asset: 'NATIVE' },
-  { id: 'SGH_XLM',   label: 'SeagullCash (SGH) on Stellar', chain: 'XLM',   asset: 'SEAGULLCASH' },
-  { id: 'HBAR_NATIVE',label: 'Native HBAR (Hedera)',        chain: 'HBAR',  asset: 'NATIVE' },
-  { id: 'SGH_HBAR',  label: 'SeagullCash (SGH) on Hedera',  chain: 'HBAR',  asset: 'SEAGULLCASH' },
-  { id: 'XDC_NATIVE', label: 'Native XDC (XDC Network)',    chain: 'XDC',   asset: 'NATIVE' },
-  { id: 'SGC_XDC',   label: 'SeagullCoin (SGC) on XDC',     chain: 'XDC',   asset: 'SEAGULLCOIN' },
-  { id: 'FLR_NATIVE', label: 'Native FLR (Flare Network)',  chain: 'FLARE', asset: 'NATIVE' },
-  { id: 'SGC_FLR',   label: 'SeagullCoin (SGC) on Flare',   chain: 'FLARE', asset: 'SEAGULLCOIN' }
+  { id: 'XRP_NATIVE', label: 'XRP',           chain: 'XRPL',  asset: 'XRP' },
+  { id: 'SGC_XRPL',  label: 'SeagullCoin (XRPL)',    chain: 'XRPL',  asset: 'SEAGULLCOIN' },
+  { id: 'SGH_XRPL',  label: 'SeagullCash (XRPL)',    chain: 'XRPL',  asset: 'SEAGULLCASH' },
+  { id: 'XLM_NATIVE', label: 'XLM',        chain: 'XLM',   asset: 'XLM' },
+  { id: 'SGH_XLM',   label: 'SeagullCash (Stellar)', chain: 'XLM',   asset: 'SEAGULLCASH' },
+  { id: 'HBAR_NATIVE',label: 'HBAR',        chain: 'HBAR',  asset: 'Hbar' },
+  { id: 'SGH_HBAR',  label: 'SeagullCash (Hedera)',  chain: 'HBAR',  asset: 'SEAGULLCASH' },
+  { id: 'XDC_NATIVE', label: 'XDC',    chain: 'XDC',   asset: 'XDC' },
+  { id: 'SGC_XDC',   label: 'SeagullCoin (XDC)',     chain: 'XDC',   asset: 'SEAGULLCOIN' },
+  { id: 'FLR_NATIVE', label: 'FLR',  chain: 'FLARE', asset: 'FLR' },
+  { id: 'SGC_FLR',   label: 'SeagullCoin (Flare)',   chain: 'FLARE', asset: 'SEAGULLCOIN' }
 ];
 
 const BridgeWidget = ({ userAddress, userWallets, balances, userMnemonic, kycStatus }) => {

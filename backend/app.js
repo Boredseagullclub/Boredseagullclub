@@ -44,6 +44,10 @@ const { router: pricesRouter, startBackgroundDataLogging } = require('../routes/
 const supportRouter = require('../routes/support');
 const { executeMultiChainScout } = require('./services/ScoutEngine');
 const { triggerGlobalEcosystemSync } = require('./services/HolderIndexer');
+const nftUtilityRoutes = require('./routes/nftUtilityRoutes');
+const { xrplQueue, getNextClient } = require('./xrplQueue');
+
+
 
 
 // Critical env check
@@ -163,6 +167,7 @@ app.use('/api/bridge/support', supportRouter);
 app.use('/api/prices', pricesRouter);
 app.use('/api/bridge', bridgeRoutes);
 app.use(express.static(path.join(__dirname, '..', 'dist')));
+app.use('/api/nft-utility', nftUtilityRoutes);
 // Health & metrics
 app.get('/api/health/status', async (req, res) => {
   const dbConnected = mongoose.connection.readyState === 1;
@@ -220,6 +225,47 @@ const TREASURY_DEPOSITS = {
   XDC: { address: 'xdc3B51F488f729e5Cfa566990Fd7f069F364b6984D' },
   FLARE: { address: '0x6FeD6C7501Ac980548DAE096F022Ae3758E6DecC' }
 };
+
+
+// POST: Save or update a user's staked tokens backup
+app.post('/api/vault/sync-stakes', async (req, res) => {
+  try {
+    const { userAddress, stakedHoldings } = req.body;
+    if (!userAddress) return res.status(400).json({ success: false, error: "Missing address" });
+
+    // 👉 Grab the active native MongoDB database directly from Mongoose
+    const db = mongoose.connection.db;
+
+    // Update or insert the staking record for this address in MongoDB
+    await db.collection('user_stakes').updateOne(
+      { userAddress: userAddress.toLowerCase() },
+      { $set: { stakedHoldings, updatedAt: new Date() } },
+      { upsert: true }
+    );
+
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// GET: Retrieve user's staked tokens backup
+app.get('/api/vault/stakes/:address', async (req, res) => {
+  try {
+    const { address } = req.params;
+    
+    // 👉 Grab the active native MongoDB database directly from Mongoose
+    const db = mongoose.connection.db;
+    
+    const record = await db.collection('user_stakes').findOne({ userAddress: address.toLowerCase() });
+
+    res.json({ success: true, stakedHoldings: record && record.stakedHoldings ? record.stakedHoldings : [] });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+
 
 app.post('/api/bridge/intent', async (req, res) => {
     const { amount, symbol, fromChain, toChain, destinationAddress, userId } = req.body;
@@ -290,6 +336,150 @@ app.get('/api/bridge/tickets/:userId', async (req, res) => {
     } catch (err) {
         console.error("Heartbeat Ticket Fetch Error:", err.message);
         res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+const TREASURY_XRPL = 'rL9qvc9KhW7fX6eYtiw8a5HUEtYzGTYZcf';
+const TREASURY_SECRET = process.env.TREASURY_SECRET ? process.env.TREASURY_SECRET.trim() : '';
+const XRPL_WS_URL = process.env.XRPL_WS_URL || 'wss://s1.ripple.com';
+const SEAGULL_CASH_HEX = "53656167756C6C43617368000000000000000000";
+const XRP_RPC = process.env.XRP_RPC || 'wss://s2.ripple.com';
+
+const SEAGULL_CASH_CONFIG = {
+    currency: "53656167756C6C43617368000000000000000000",
+    issuer: "rNHeGnj4kqGSVyFzDcoyi3gsp1bdPuGeNK"
+};
+
+app.post('/api/unstake', async (req, res) => {
+    const { nftId, userAddress, earnedRewards } = req.body;
+
+    if (!nftId || !userAddress) {
+        return res.status(400).json({ success: false, error: 'Missing nftId or userAddress' });
+    }
+
+    if (!TREASURY_SECRET) {
+        return res.status(500).json({ success: false, error: 'Treasury secret not configured on server' });
+    }
+
+    const client = new xrpl.Client(XRP_RPC);
+    try {
+        await client.connect();
+        const treasuryWallet = xrpl.Wallet.fromMnemonic(TREASURY_SECRET);
+
+        // 1. Process NFT return (Create zero-amount sell offer from Treasury to user)
+        const nftTx = {
+            TransactionType: "NFTokenCreateOffer",
+            Account: TREASURY_XRPL,
+            NFTokenID: nftId,
+            Destination: userAddress,
+            Amount: "0",
+            Flags: 1 // tfSell
+        };
+
+        const preparedNft = await client.autofill(nftTx);
+        const signedNft = treasuryWallet.sign(preparedNft);
+        const nftResult = await client.submitAndWait(signedNft.tx_blob);
+
+        const nftEngineResult = nftResult.result?.meta?.TransactionResult || nftResult.result?.EngineResult;
+        if (nftEngineResult !== 'tesSUCCESS') {
+            return res.status(400).json({ success: false, error: `NFT return failed: ${nftEngineResult}` });
+        }
+
+        let rewardTxHash = null;
+
+        // 2. Process accumulated rewards payout if greater than 0
+        if (earnedRewards && Number(earnedRewards) > 0) {
+            const formattedRewards = Number(earnedRewards).toFixed(6).replace(/\.?0+$/, '');
+            
+            const paymentTx = {
+                TransactionType: "Payment",
+                Account: TREASURY_XRPL,
+                Destination: userAddress,
+                Amount: {
+                    currency: SEAGULL_CASH_CONFIG.currency,
+                    issuer: SEAGULL_CASH_CONFIG.issuer,
+                    value: formattedRewards
+                }
+            };
+
+            const preparedPayment = await client.autofill(paymentTx);
+            const signedPayment = treasuryWallet.sign(preparedPayment);
+            const paymentResult = await client.submitAndWait(signedPayment.tx_blob);
+
+            const paymentEngineResult = paymentResult.result?.meta?.TransactionResult || paymentResult.result?.EngineResult;
+
+            if (paymentEngineResult !== 'tesSUCCESS') {
+                return res.status(400).json({ success: false, error: `Reward distribution failed during unstake: ${paymentEngineResult}` });
+            }
+
+            rewardTxHash = paymentResult.result.hash;
+        }
+
+        res.json({ 
+            success: true, 
+            nftResult, 
+            rewardTxHash 
+        });
+
+    } catch (err) {
+        console.error('Backend Unstake & Claim Error:', err);
+        res.status(500).json({ success: false, error: err.message });
+    } finally {
+        if (client.isConnected()) {
+            await client.disconnect();
+        }
+    }
+});
+
+       
+
+app.post('/api/claim', async (req, res) => {
+    const { userAddress, earnedRewards } = req.body;
+
+    if (!userAddress || !earnedRewards || Number(earnedRewards) <= 0) {
+        return res.status(400).json({ success: false, error: 'Invalid reward amount or user address' });
+    }
+
+    if (!TREASURY_SECRET) {
+        return res.status(500).json({ success: false, error: 'Treasury secret not configured on server' });
+    }
+
+    const formattedRewards = Number(earnedRewards).toFixed(6).replace(/\.?0+$/, '');
+
+    const client = new xrpl.Client(XRP_RPC);
+    try {
+        await client.connect();
+        const treasuryWallet = xrpl.Wallet.fromMnemonic(TREASURY_SECRET);
+        
+        const paymentTx = {
+            TransactionType: "Payment",
+            Account: TREASURY_XRPL,
+            Destination: userAddress,
+            Amount: {
+                currency: SEAGULL_CASH_CONFIG.currency,
+                issuer: SEAGULL_CASH_CONFIG.issuer,
+                value: formattedRewards
+            }
+        };
+
+        const prepared = await client.autofill(paymentTx);
+        const signed = treasuryWallet.sign(prepared);
+        const txResult = await client.submitAndWait(signed.tx_blob);
+
+        const engineResult = txResult.result?.meta?.TransactionResult || txResult.result?.EngineResult;
+
+        if (engineResult === 'tesSUCCESS') {
+            res.json({ success: true, txHash: txResult.result.hash });
+        } else {
+            res.status(400).json({ success: false, error: `Reward distribution failed: ${engineResult}` });
+        }
+    } catch (err) {
+        console.error('Backend Claim Error:', err);
+        res.status(500).json({ success: false, error: err.message });
+    } finally {
+        if (client.isConnected()) {
+            await client.disconnect();
+        }
     }
 });
 
@@ -401,7 +591,7 @@ conditions="There will only ever be 9,999,999,999,999 SeagullCash tokens in exis
 [[CURRENCIES]]
 code="SeagullCash"
 name="SeagullCash"
-issuer="GBC2VA3YMAIVB3A77VNRPKMQI3RAPDUDDP7JI2PE426MGKDDJFPRVWP7"
+.issuer="GBC2VA3YMAIVB3A77VNRPKMQI3RAPDUDDP7JI2PE426MGKDDJFPRVWP7"
 display_decimals=7
 image="https://files.catbox.moe/w3cets.png"
 is_asset_anchored=true
@@ -419,7 +609,8 @@ conditions="There will only ever be 9,999,999,999,999 SeagullCash tokens in exis
 
 //// 🔍 GET USER PROFILE (Intelligently queries either 'users' or 'agents')
 //// 🔍 GET USER PROFILE (Intelligently queries either 'users' or 'agents')
-app.get('/api/user/profile', authenticateJWT, async (req, res) => {
+app.get('/api/user/profile', async (req, res) => {
+
   try {
     const { id } = req.query;
     if (!id) {
@@ -440,12 +631,18 @@ app.get('/api/user/profile', authenticateJWT, async (req, res) => {
 
     let record = null;
 
-    if (isEvm) {
-      // 🦅 Queries 'users' via 'walletAddress' matching the exact casing used in submit/database test
-      record = await activeDb.collection('users').findOne({ walletAddress: formattedId });
+        if (isEvm) {
+      // 🦅 Bulletproof query: Checks both fields and ignores casing differences
+      record = await activeDb.collection('users').findOne({
+        $or: [
+          { walletAddress: { $regex: new RegExp(`^${formattedId}$`, 'i') } },
+          { publicAddress: { $regex: new RegExp(`^${formattedId}$`, 'i') } }
+        ]
+      });
     } else {
       record = await activeDb.collection('agents').findOne({ seagullNetId: formattedId });
     }
+
 
     if (!record) {
       return res.json({
@@ -565,31 +762,47 @@ app.post('/api/user/kyc/submit', upload.any(), async (req, res) => {
 
 
     const assignedStatus = (targetTier === "TIER_2_INSTITUTIONAL") ? "TIER_2_INSTITUTIONAL" : "TIER_1_VERIFIED";
-    const cleanAddress = walletAddress.trim(); // 👈 Keep the original casing that worked in your test!
+    const cleanAddress = walletAddress.trim(); 
 
-    // Update or create the User record directly by wallet address
-    await activeDb.collection('users').updateOne(
-      { walletAddress: cleanAddress }, // Query key
-      {
-        $set: {
-          walletAddress: cleanAddress,   // Ensure this field is explicitly written
-          publicAddress: cleanAddress,   // 🦅 Populates unique index field to prevent Mongo E11000 null errors!
-          kycStatus: assignedStatus,
-          fullName: fullName.trim(),
-          dateOfBirth: dateOfBirth,
-          country: country.trim(),
-          document: {
-            type: documentType,
-            number: documentNumber.trim(),
-            fileName: uploadedFile.filename,
-            filePath: uploadedFile.path,
-            uploadedAt: new Date()
-          },
-          updatedAt: new Date()
-        }
+    // 1. Bulletproof query: check if user exists (ignoring casing differences)
+    const existingUser = await activeDb.collection('users').findOne({
+      $or: [
+        { walletAddress: { $regex: new RegExp(`^${cleanAddress}$`, 'i') } },
+        { publicAddress: { $regex: new RegExp(`^${cleanAddress}$`, 'i') } }
+      ]
+    });
+
+    // 🦅 Build the update payload
+    const updatePayload = {
+      walletAddress: cleanAddress,   
+      publicAddress: cleanAddress,   // Populates unique index field to prevent Mongo E11000
+      kycStatus: assignedStatus,
+      fullName: fullName ? fullName.trim() : '',
+      dateOfBirth: dateOfBirth,
+      country: country ? country.trim() : '',
+      document: {
+        type: documentType,
+        number: documentNumber ? documentNumber.trim() : '',
+        fileName: uploadedFile.filename,
+        filePath: uploadedFile.path,
+        uploadedAt: new Date()
       },
-      { upsert: true } // Creates the document if the user doesn't exist yet!
-    );
+      updatedAt: new Date()
+    };
+
+    if (existingUser) {
+      // 2a. Update by exact _id to bypass duplicate key risks completely
+      await activeDb.collection('users').updateOne(
+        { _id: existingUser._id },
+        { $set: updatePayload }
+      );
+    } else {
+      // 2b. Insert fresh only if they genuinely do not exist
+      await activeDb.collection('users').insertOne({
+        ...updatePayload,
+        createdAt: new Date()
+      });
+    }
 
     res.json({
       success: true,
@@ -602,6 +815,7 @@ app.post('/api/user/kyc/submit', upload.any(), async (req, res) => {
     res.status(500).json({ success: false, error: "INTERNAL_SERVER_ERROR" });
   }
 });
+
 
 // 🦅 THE AI AGENT MANIFEST: Gated securely behind agent token validation
 app.get('/api/agent/manifest', authenticateJWT, (req, res) => {
@@ -830,11 +1044,10 @@ app.post('/api/kyc/submit', upload.any(), async (req, res) => {
     const targetCollection = isEvm ? 'users' : 'agents';
 
     // 🦅 Query and save with the EXACT SAME casing that succeeded in your manual script
-    const queryFilter = isEvm ? { publicAddress: formattedId } : { seagullNetId: formattedId };
+       const queryFilter = isEvm ? { publicAddress: formattedId } : { seagullNetId: formattedId };
     const publicAddressVal = isEvm ? formattedId : null;
     const walletAddressVal = isEvm ? formattedId : null;
-
-    // Update or create the record in the correct collection
+                                                                                                                                                              // Update or create the record in the correct collection
     await activeDb.collection(targetCollection).updateOne(
       queryFilter,
       {
@@ -876,6 +1089,8 @@ app.post('/api/kyc/submit', upload.any(), async (req, res) => {
         registeredName: fullName.trim()
       }
     });
+    
+
 
   } catch (error) {
     console.error("Unified KYC Submit Error:", error);

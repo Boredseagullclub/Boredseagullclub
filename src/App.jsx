@@ -7,98 +7,175 @@ import SlotMachine from './components/SlotMachine';
 import AgentGateway from './components/AgentGateway';
 import BridgeWidget from './components/BridgeWidget';
 import Swap from './components/Swap';
-import ChartsAndSwap from './components/ChartsAndSwap'; // 🦅 Imported chart assembly safely
+import ChartsAndSwap from './components/ChartsAndSwap';
 import { X, ExternalLink } from 'lucide-react';
 import * as xrpl from 'xrpl';
 import * as StellarSdk from '@stellar/stellar-sdk';
 import * as bip39 from 'bip39';
 import { derivePath } from 'ed25519-hd-key';
+import NFTUtility from './components/NFTUtility';
 
 
 function App() {
-  const [id, setId] = useState(localStorage.getItem('sovereign_local'));
+  const [id, setId] = useState(localStorage.getItem('sovereign_local'));                          
   const [showImport, setShowImport] = useState(false);
   const [showReveal, setShowReveal] = useState(false);
   const [revealSeed, setRevealSeed] = useState(false);
-  const [secretInput, setSecretInput] = useState("");
+  const [secretInput, setSecretInput] = useState("");                                             
   const [generatedMnemonic, setGeneratedMnemonic] = useState("");
 
   // 🎰 GLOBAL NAVIGATION STATE CONTROLLERS
   const [isGameOpen, setIsGameOpen] = useState(false);
   const [isMenuOpen, setIsMenuOpen] = useState(false);
-
   const { user, loading } = useBridge(id);
 
-    const handleCreateWallet = async () => {
+  const handleCreateWallet = async () => {
     try {
-      // 🦅 Generate a secure 24-word mnemonic entirely on the client side (256 bits of entropy)
       const mnemonic = bip39.generateMnemonic(256);
-      
       if (mnemonic) {
         setGeneratedMnemonic(mnemonic);
         setShowReveal(true);
       }
-    } catch (err) {
+    } catch (err) {                                                                               
       console.error("Client-side generation error:", err);
-      alert("🦅 Generation failed.");
+      alert("🦅 Generation failed.");                                                             
     }
   };
-
-
-    const handleImport = async () => {
+     
+const handleImport = async () => {
     if (!secretInput) return alert("🦅 Enter a seed!");
     const cleanSecret = secretInput.trim();
-    const wordCount = cleanSecret.split(/\s+/).length;
-
-    if (wordCount !== 12 && wordCount !== 24 && cleanSecret.length < 30) {
+    const wordCount = cleanSecret.split(/\s+/).length;                                                                                                                                              
+    if (wordCount !== 12 && wordCount !== 24 && cleanSecret.length < 30) {                        
       return alert("🦅 Invalid Format. Please enter 12 or 24 words.");
     }
 
     try {
       localStorage.setItem('secret', cleanSecret);
 
-      // 🦅 1. CLIENT-SIDE DERIVATION: Instantly generate the XRPL and XLM addresses
       const xrplWallet = xrpl.Wallet.fromMnemonic(cleanSecret);
-      localStorage.setItem('cached_xrpl_address', xrplWallet.address);
-
+      localStorage.setItem('cached_xrpl_address', xrplWallet.address);                                                                                                                              
       const seed = await bip39.mnemonicToSeed(cleanSecret);
       const derived = derivePath("m/44'/148'/0'", seed.toString('hex'));
       const keypair = StellarSdk.Keypair.fromRawEd25519Seed(derived.key);
       localStorage.setItem('cached_stellar_address', keypair.publicKey());
 
-      // 🦅 2. BACKEND SYNC: Your existing logic to fetch the EVM identity
       const response = await fetch('/api/auth/import', {
-        method: 'POST',
+        method: 'POST',                                                                           
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ secret: cleanSecret })
+        body: JSON.stringify({ secret: cleanSecret })                                             
       });
-      const data = await response.json();
-
+      const data = await response.json();                                                                                                                                                           
       const rawAddress = data.publicAddress || data.address || data.account || 'Unknown Vault';
-
-      localStorage.setItem('sovereign_local', rawAddress);
-      localStorage.setItem('seagull_user_id', rawAddress);
+     
       
-      // Pass the raw EVM address straight into the state so the balances endpoint doesn't fail
-      setId(rawAddress);
+      localStorage.setItem('sovereign_local', rawAddress);                                        
+      localStorage.setItem('seagull_user_id', rawAddress);
+      setId(rawAddress);                                                                          
       setSecretInput("");
-      setShowImport(false);
+      setShowImport(false);                                                                       
     } catch (err) {
-      // 🦅 3. THE FIX: No more "sovereign_user" dummy trap. It fails loudly now.
       alert("🦅 Login Failed. Check connection or seed phrase.");
-      localStorage.removeItem('sovereign_local');
+      localStorage.removeItem('sovereign_local');                                                 
       setId(null);
+    }                                                                                             
+  };
+
+       const handleLogout = () => {
+    // 🔒 1. Grab the exact XRPL address where stakes are stored
+    const xrplAddr = localStorage.getItem('cached_xrpl_address');
+    let currentStakes = null;
+    
+    if (xrplAddr) {
+      currentStakes = localStorage.getItem(`btc_staked_tokens_${xrplAddr}`);
+    }
+
+    // 2. Wipe session data securely
+    localStorage.removeItem('secret');
+    localStorage.removeItem('cached_xrpl_address');
+    localStorage.removeItem('sovereign_local');
+    localStorage.removeItem('seagull_user_id');
+    setId(null);
+
+    // 3. Restore the stakes cache exactly where NFTUtility looks for it
+    if (xrplAddr && currentStakes) {
+      localStorage.setItem(`btc_staked_tokens_${xrplAddr}`, currentStakes);
+    }
+
+    window.location.reload();
+  };
+
+
+
+
+    // ⚡ SECURE CLIENT-SIDE STAKING (Keys never leave the browser)
+  const handleInitiateStake = async ({ nftId, destination }) => {
+    const mnemonic = localStorage.getItem('secret');
+    if (!mnemonic) throw new Error("No wallet seed found");
+
+    // 1. Instantiate the wallet locally in browser memory from your mnemonic
+    const wallet = xrpl.Wallet.fromMnemonic(mnemonic);
+
+    // 2. Connect to public XRPL cluster WebSocket
+    const client = new xrpl.Client('wss://xrplcluster.com');
+    await client.connect();
+
+    try {
+      const tx = {
+        TransactionType: "NFTokenCreateOffer",
+        Account: wallet.address,
+        NFTokenID: nftId,
+        Destination: destination,
+        Amount: "0", // 0 drops for free transfer/lock offer to vault
+        Flags: 1     // tfSellOffer
+      };
+
+      // 3. Autofill, sign locally, and submit
+      const prepared = await client.autofill(tx);
+      const signed = wallet.sign(prepared);
+      const result = await client.submitAndWait(signed.tx_blob);
+
+      console.log("NFT Staked On-Chain Locally:", result);
+      return result;
+    } finally {
+      await client.disconnect();
     }
   };
 
 
-  const handleLogout = () => {
-    localStorage.clear();
-    setId(null);
-    window.location.reload();
+  const handleUnstake = async ({ nftId, earnedRewards, currencyHex }) => {
+    const userAddress = localStorage.getItem('cached_xrpl_address') || id;
+
+    const response = await fetch('/api/vault/unstake', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userAddress, nftId, earnedRewards, currencyHex })
+    });
+
+    if (!response.ok) {
+      const errData = await response.json();
+      throw new Error(errData.message || "Unstake transaction failed");
+    }
+    return await response.json();
   };
 
-  const LoginView = () => (
+  const handleClaim = async ({ nftId, earnedRewards, currencyHex }) => {
+    const userAddress = localStorage.getItem('cached_xrpl_address') || id;
+
+    const response = await fetch('/api/vault/claim', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userAddress, nftId, earnedRewards, currencyHex })
+    });
+
+    if (!response.ok) {
+      const errData = await response.json();
+      throw new Error(errData.message || "Claim failed");
+    }
+    return await response.json();
+  };
+
+  const LoginView = () => (                                                                       
     <div style={loginBgStyle}>
       <div style={glowTopStyle}></div>
       <div style={glowBottomStyle}></div>
@@ -107,7 +184,7 @@ function App() {
         <div style={{ display: 'flex', justifyContent: 'center', marginBottom: '30px' }}>
           <div style={logoRingStyle}>
             <span style={{ fontSize: '40px' }}>🪽</span>
-          </div>
+          </div>                                                                                  
         </div>
 
         <h1 style={titleStyle}>
@@ -123,8 +200,7 @@ function App() {
           </button>
         </div>
 
-        {/* 🏛️ PUBLIC BRIDGE BUTTON */}
-        <Link to="/bridge" style={{ textDecoration: 'none', marginTop: '25px', display: 'block' }}>
+        <Link to="/bridge" style={{ textDecoration: 'none', marginTop: '25px', display: 'block' }}>                                                                                                 
           <div style={publicBridgeBtnStyle}>
             <span style={{ color: '#ffcc00', fontWeight: '900', fontSize: '11px', letterSpacing: '1px' }}>
               PUBLIC BRIDGE ✅ <ExternalLink size={14} style={{ marginLeft: '5px', verticalAlign: 'middle' }} />
@@ -132,14 +208,13 @@ function App() {
           </div>
         </Link>
 
-        {/* 🛰️ AI GATEWAY STATUS */}
-        <div style={restrictedGatewayStyle}>
+        <div style={restrictedGatewayStyle}>                                                      
           <div style={{
             display: 'flex',
             alignItems: 'center',
             gap: '10px',
-            background: 'rgba(0, 255, 204, 0.05)',
-            padding: '6px 15px',
+            background: 'rgba(0, 255, 204, 0.05)',                                                
+            padding: '6px 15px',                                                                  
             borderRadius: '12px',
             border: '1px solid rgba(0, 255, 204, 0.2)',
             boxShadow: '0 0 15px rgba(0, 255, 204, 0.05)'
@@ -150,14 +225,14 @@ function App() {
           </div>
         </div>
         <div style={footerStyle}>
-          <p>NON-CUSTODIAL MULTI-CHAIN SYSTEM // V2.0</p>
-          <Link to="/agent-gateway" style={{ opacity: 0, fontSize: '1px', position: 'absolute' }}>.</Link>
+          <p>NON-CUSTODIAL MULTI-CHAIN SYSTEM // V2.0</p>                                         
+          <Link to="/agent-gateway" style={{ opacity: 0, fontSize: '1px', position: 'absolute' }}>.</Link>                                                                                          
         </div>
       </div>
 
       {showReveal && (
         <div style={overlayStyle}>
-          <div style={{...importModalStyle, maxWidth: '500px', textAlign: 'center', border: '1px solid #00d4ff'}}>
+          <div style={{...importModalStyle, maxWidth: '500px', textAlign: 'center', border: '1px solid #00d4ff'}}>                                                                                  
             <h2 style={{ fontSize: '20px', fontStyle: 'italic', fontWeight: '900', color: '#00d4ff', marginBottom: '10px' }}>SOVEREIGN BACKUP</h2>
             <p style={{ fontSize: '11px', color: '#666', marginBottom: '30px' }}>Write down these 24 words. If you lose them, your assets are gone forever.</p>
 
@@ -166,8 +241,8 @@ function App() {
                 <div style={blurOverlayStyle}>
                   <span style={{ fontSize: '10px', fontWeight: '900', letterSpacing: '3px', color: '#00d4ff' }}>CLICK TO REVEAL SEED</span>
                 </div>
-              )}
-              <p style={{ ...seedTextStyle, filter: revealSeed ? 'none' : 'blur(4px)' }}>
+              )}                                                                                  
+              <p style={{ ...seedTextStyle, filter: revealSeed ? 'none' : 'blur(4px)' }}>         
                 {generatedMnemonic}
               </p>
             </div>
@@ -183,21 +258,21 @@ function App() {
               I HAVE SECURED MY PHRASE
             </button>
           </div>
-        </div>
+        </div>                                                                                    
       )}
 
       {showImport && (
         <div style={overlayStyle}>
-          <div style={{...importModalStyle, maxWidth: '450px'}}>
+          <div style={{...importModalStyle, maxWidth: '450px'}}>                                  
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '30px' }}>
               <h2 style={{ margin: 0, fontSize: '24px', fontStyle: 'italic', fontWeight: '900' }}>VAULT ACCESS</h2>
               <button onClick={() => setShowImport(false)} style={{ background: 'none', border: 'none', color: '#444', cursor: 'pointer' }}><X /></button>
             </div>
             <textarea
-              placeholder="Enter words separated by spaces..."
+              placeholder="Enter words separated by spaces..."                                    
               style={{ ...modalInputStyle, height: '120px', resize: 'none', padding: '20px', fontSize: '14px', lineHeight: '1.5' }}
               value={secretInput}
-              onChange={(e) => setSecretInput(e.target.value)}
+              onChange={(e) => setSecretInput(e.target.value)}                                    
             />
             <button onClick={handleImport} style={{ ...primaryBtnStyle, marginTop: '30px', width: '100%' }}>
               UNLOCK DASHBOARD
@@ -205,19 +280,13 @@ function App() {
           </div>
         </div>
       )}
-    </div>
+    </div>                                                                                        
   );
-
-  const hideHeader = (!id && window.location.pathname === '/rich-list') ||
-                     window.location.pathname === '/bridge' ||
-                     window.location.pathname === '/slots';
 
   return (
     <Router>
-      {/* 🎰 THE UNIFIED MAIN TOP BAR */}
       {id && (
         <div style={globalCasinoHeaderStyle}>
-          {/* ☰ FAR LEFT: Hamburger Menu Trigger */}
           <div
             onClick={() => setIsMenuOpen(!isMenuOpen)}
             style={{ ...hamburgerLeftGroupStyle, cursor: 'pointer' }}
@@ -227,62 +296,53 @@ function App() {
             <span style={hamburgerLineStyle}></span>
           </div>
 
-          {/* 📋 CLICKABLE NAV MENU DROPDOWN PANEL */}
           {isMenuOpen && (
             <div style={dropdownMenuOverlayStyle}>
               <div style={dropdownHeaderStyle}>
-                <span style={{ color: '#00d4ff', fontSize: '10px', fontWeight: '900', letterSpacing: '1px' }}>CORE NAV TERMINAL</span>
+                <span style={{ color: '#00d4ff', fontSize: '10px', fontWeight: '900', letterSpacing: '1px' }}>CORE NAV TERMINAL</span>                                                              
                 <button onClick={() => setIsMenuOpen(false)} style={menuCloseXStyle}>✕</button>
               </div>
               <div style={menuLinkContainerStyle}>
                 <Link to="/" onClick={() => setIsMenuOpen(false)} style={menuLinkItemStyle}>🏛️ SOVEREIGN WALLET</Link>
+                <Link to="/gallery" onClick={() => setIsMenuOpen(false)} style={menuLinkItemStyle}>🖼️ NFT GALLERY</Link>
                 <Link to="/swap" onClick={() => setIsMenuOpen(false)} style={menuLinkItemStyle}>🔄 LIVE EXCHANGE</Link>
                 <Link to="/rich-list" onClick={() => setIsMenuOpen(false)} style={menuLinkItemStyle}>🛰️ RICH LIST/ SEAGULL EXPLORER</Link>
-                <Link to="/agent-gateway" onClick={() => setIsMenuOpen(false)} style={menuLinkItemStyle}>🤖 AI AGENT GATEWAY</Link>
-              </div>
+                <Link to="/agent-gateway" onClick={() => setIsMenuOpen(false)} style={menuLinkItemStyle}>🤖 AI AGENT GATEWAY</Link>                                                                 
+              </div>                                                                              
             </div>
-          )}
-
-          {/* 🎰 VERY TOP RIGHT: Compact Casino Trigger Button */}
+          )}                                                                                                                                                                                        
           <button
             onClick={() => setIsGameOpen(!isGameOpen)}
             style={{
               ...casinoTriggerBtnStyle,
               borderColor: isGameOpen ? '#ff4444' : '#00d4ff',
               color: isGameOpen ? '#ff4444' : '#00d4ff',
-            }}
-          >
-            {isGameOpen ? '✕ CLOSE' : '🎰 PLAY SLOTS'}
-          </button>
+            }}                                                                                              >
+            {isGameOpen ? '✕ CLOSE' : '🎰 PLAY SLOTS'}                                            
+          </button>                                                                               
         </div>
-      )}
-
-      {/* 🦅 IMMERSIVE OVERLAY MODAL */}
+      )}                                                                                                                                                                                            
       {isGameOpen && id && (
         <div style={modalBackdropStyle}>
           <div style={modalContainerPaneStyle}>
             <div style={modalInnerCloseHeaderStyle}>
-              <button onClick={() => setIsGameOpen(false)} style={modalInnerXStyle}>✕</button>
-            </div>
+              <button onClick={() => setIsGameOpen(false)} style={modalInnerXStyle}>✕</button>    
+            </div>                                                                                
             <div style={{ overflowY: 'auto', maxHeight: '85vh', padding: '10px 10px 25px 10px' }}>
               <SlotMachine userAddress={id} balances={user?.balances || []} />
-            </div>
+            </div>                                                                                
           </div>
-        </div>
-      )}
-
+        </div>                                                                                    
+      )}                                                                                                                                                                                            
       <Routes>
-        {/* 🦅 Root: Login vs Dashboard */}
         <Route path="/" element={!id ? <LoginView /> : <Dashboard userAddress={id} userMnemonic={localStorage.getItem('secret')} onLogout={handleLogout} />} />
 
-        {/* 📊 EXTERNAL UNPROTECTED PUBLIC URL */}
         <Route path="/rich-list" element={
           <div style={{ padding: '20px', background: '#000', minHeight: '100vh' }}>
-            <SeagullExplorer standalone={true} />
+            <SeagullExplorer standalone={true} />                                                 
           </div>
         } />
 
-        {/* 🏛️ Public Functional Bridge (Guest Mode Supported) */}
         <Route path="/bridge" element={
           <div style={{ padding: '40px 20px', background: '#000', minHeight: '100vh' }}>
             <BridgeWidget
@@ -295,12 +355,9 @@ function App() {
           </div>
         } />
 
-        {/* 🔄 Live Swap Interface Track */}
-        <Route path="/swap" element={
-          <div style={{ padding: '40px 20px', background: '#000', minHeight: '100vh', display: 'flex', flexDirection: 'column', gap: '30px', alignItems: 'center', justifyContent: 'center' }}>
-            {/* 📊 The Live Cross-Chain Financial Chart Panel */}
+        <Route path="/swap" element={                                                             
+          <div style={{ padding: '40px 20px', background: '#000', minHeight: '100vh', display: 'flex', flexDirection: 'column', gap: '30px', alignItems: 'center', justifyContent: 'center' }}>     
             <ChartsAndSwap />
-            {/* 🔄 The Core Ledger Swap Payout Processing Card */}
             <Swap
               userAddress={id}
               userMnemonic={localStorage.getItem('secret') || localStorage.getItem('seagull_mnemonic')}
@@ -311,9 +368,22 @@ function App() {
         <Route path="/explorer" element={<SeagullExplorer />} />
         <Route path="/agent-gateway" element={<AgentGateway userAddress={id} />} />
 
-        <Route path="/slots" element={
+        {/* 🖼️ GALLERY ROUTE WITH CONNECTED STAKING HANDLERS */}                                   
+        <Route path="/gallery" element={
+          <div style={{ padding: '40px 20px', background: '#000', minHeight: '100vh', display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+            <NFTUtility
+              userAddress={localStorage.getItem('cached_xrpl_address') || id || "GUEST_MODE"}
+              onInitiateStake={handleInitiateStake}
+              onUnstake={handleUnstake}
+              onClaim={handleClaim}
+            />                                                                                    
+            <Link to="/" style={{ color: '#444', fontSize: '10px', display: 'block', textAlign: 'center', marginTop: '20px', textDecoration: 'none' }}>← RETURN TO INTERFACE</Link>
+          </div>
+        } />
+
+        <Route path="/slots" element={                                                            
           <div style={{ padding: '40px 20px', background: '#000', minHeight: '100vh', display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
-            <SlotMachine userAddress={id || "GUEST_MODE"} balances={user?.balances || []} />
+            <SlotMachine userAddress={id || "GUEST_MODE"} balances={user?.balances || []} />      
             <Link to="/" style={{ color: '#444', fontSize: '10px', display: 'block', textAlign: 'center', marginTop: '20px', textDecoration: 'none' }}>← RETURN TO INTERFACE</Link>
           </div>
         } />
